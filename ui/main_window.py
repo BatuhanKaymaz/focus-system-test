@@ -1,4 +1,4 @@
-
+import sys
 from pathlib import Path
 import time
 
@@ -32,11 +32,18 @@ WARNING = "#F2C94C"
 SUCCESS = "#34D399"
 ERROR = "#F87171"
 
-LOGO_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "assets"
-    / "focus_logo.png"
-)
+
+def resource_path(relative_path):
+    """Kaynak dosyalarını normal Python ve PyInstaller ortamında bulur."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base_path = Path(sys._MEIPASS)
+    else:
+        base_path = Path(__file__).resolve().parent.parent
+
+    return base_path / relative_path
+
+
+LOGO_PATH = resource_path("assets/focus_logo.png")
 
 
 class LoadingSpinner(QWidget):
@@ -92,12 +99,10 @@ class LoadingSpinner(QWidget):
             colors.get(self.status, "#FFFFFF")
         )
 
-        # Mor renk yerine koyu gri arka halka
         background_pen = QPen(QColor("#303030"), 4)
         painter.setPen(background_pen)
         painter.drawArc(rect, 0, 360 * 16)
 
-        # Hafif parlama
         glow_color = QColor(color)
         glow_color.setAlpha(65)
 
@@ -114,7 +119,6 @@ class LoadingSpinner(QWidget):
         else:
             painter.drawArc(rect, 0, 300 * 16)
 
-        # Ana halka
         main_pen = QPen(color, 4)
         main_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(main_pen)
