@@ -1,18 +1,22 @@
 import sys
-from pathlib import Path
 import time
+from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, QRectF, Signal
-from PySide6.QtGui import QFont, QPixmap, QPainter, QPen, QColor, QImage
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
-    QTabWidget,
+    QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -20,21 +24,32 @@ from PySide6.QtWidgets import (
 from hardware.serial import ConnectionManager
 
 
-PURPLE = "#8058E8"
-PURPLE_DARK = "#6540C4"
-BACKGROUND = "#101010"
-WHITE = "#1B1B1B"
-TEXT_DARK = "#F0F0F0"
-TEXT_SECONDARY = "#A0A0A0"
-BORDER = "#333333"
+# =========================================================
+# RENKLER - SIYAH TEMA
+# =========================================================
 
-WARNING = "#F2C94C"
-SUCCESS = "#34D399"
-ERROR = "#F87171"
+BACKGROUND = "#000000"
+PANEL = "#080808"
+BORDER = "#292929"
+
+TEXT = "#F5F5F5"
+TEXT_SECONDARY = "#A3A3A3"
+
+RED = "#F87171"
+RED_HOVER = "#EF4444"
+RED_DARK = "#7F1D1D"
+
+GREEN = "#4ADE80"
+GREEN_DARK = "#166534"
+
+YELLOW = "#FBBF24"
+YELLOW_DARK = "#92400E"
+
+BLUE = "#38BDF8"
 
 
 def resource_path(relative_path):
-    """Kaynak dosyalarını normal Python ve PyInstaller ortamında bulur."""
+    """Kaynak dosyaların yolunu belirler."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         base_path = Path(sys._MEIPASS)
     else:
@@ -46,83 +61,11 @@ def resource_path(relative_path):
 LOGO_PATH = resource_path("assets/focus_logo.png")
 
 
-class LoadingSpinner(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.angle = 0
-        self.status = "idle"
-
-        self.timer = QTimer(self)
-        self.timer.setInterval(16)
-        self.timer.timeout.connect(self.rotate)
-
-        self.setFixedSize(64, 64)
-
-    def set_status(self, status):
-        self.status = status
-
-        if status == "running":
-            if not self.timer.isActive():
-                self.timer.start()
-        else:
-            self.timer.stop()
-            self.angle = 0
-
-        self.update()
-
-    def start(self):
-        self.set_status("running")
-
-    def stop(self):
-        self.set_status("idle")
-
-    def rotate(self):
-        self.angle = (self.angle + 4) % 360
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        rect = QRectF(8, 8, 48, 48)
-
-        colors = {
-            "idle": "#FFFFFF",
-            "running": "#F2C94C",
-            "completed": "#34D399",
-        }
-
-        color = QColor(colors.get(self.status, "#FFFFFF"))
-
-        background_pen = QPen(QColor("#303030"), 4)
-        painter.setPen(background_pen)
-        painter.drawArc(rect, 0, 360 * 16)
-
-        glow_color = QColor(color)
-        glow_color.setAlpha(65)
-
-        glow_pen = QPen(glow_color, 8)
-        glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(glow_pen)
-
-        if self.status == "running":
-            painter.drawArc(rect, -self.angle * 16, -100 * 16)
-        else:
-            painter.drawArc(rect, 0, 300 * 16)
-
-        main_pen = QPen(color, 4)
-        main_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(main_pen)
-
-        if self.status == "running":
-            painter.drawArc(rect, -self.angle * 16, -100 * 16)
-        else:
-            painter.drawArc(rect, 0, 300 * 16)
-
+# =========================================================
+# ANA PENCERE
+# =========================================================
 
 class MainWindow(QMainWindow):
-    # Ana pencereye geri dönüş sinyali
     back_requested = Signal()
 
     def __init__(self):
@@ -130,8 +73,22 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Focus Test System")
         self.resize(1440, 900)
+        self.setMinimumSize(1050, 700)
 
-        self.values = {
+        self.connection_manager = ConnectionManager()
+        self.device_connected = False
+        self.device_port = ""
+
+        self.current_mode = "onoff"
+        self.measuring = False
+        self.actuator_running = False
+        self.stopped = False
+        self.start_time = None
+        self.elapsed_seconds = 0
+        self.last_command_status = ""
+
+        # Varsayılan metinler (sıfırlama için)
+        self.default_values = {
             "torque": "0.00",
             "current": "0.00",
             "voltage": "0.0",
@@ -139,17 +96,16 @@ class MainWindow(QMainWindow):
             "speed": "0",
         }
 
-        self.measuring = False
-        self.start_time = None
-        self.elapsed_seconds = 0
+        # Ölçüm kartlarındaki QLabel nesneleri
+        self.value_labels = {}
 
-        self.connection_manager = ConnectionManager()
+        self.graphs = {}
+        self.graph_curves = {}
+        self.graph_data = {}
 
         self.setup_ui()
         self.apply_styles()
-
         self.set_measurement_color(False)
-        self.set_test_type("SİSTEM HAZIR", "#F0F0F0")
 
         self.measurement_timer = QTimer(self)
         self.measurement_timer.setInterval(100)
@@ -158,12 +114,17 @@ class MainWindow(QMainWindow):
         )
 
         self.connection_timer = QTimer(self)
+        self.connection_timer.setInterval(1500)
         self.connection_timer.timeout.connect(
             self.check_hardware_connection
         )
-        self.connection_timer.start(1500)
+        self.connection_timer.start()
 
         self.check_hardware_connection()
+
+    # =====================================================
+    # ARAYÜZ KURULUMU
+    # =====================================================
 
     def setup_ui(self):
         central = QWidget()
@@ -171,44 +132,57 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(28, 22, 28, 24)
-        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(20, 16, 20, 18)
+        main_layout.setSpacing(14)
 
-        # HEADER
-        # Ana Sayfa butonu mevcut başlık satırına yerleştirildi.
-        # Ayrı bir navigasyon satırı olmadığı için içerik aşağı kaymaz.
+        main_layout.addLayout(self.create_header())
+        main_layout.addLayout(self.create_measurement_cards())
+
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setSpacing(14)
+
+        self.graph_panel = self.create_graph_panel()
+        self.control_panel = self.create_control_panel()
+
+        bottom_layout.addWidget(self.graph_panel, 6)
+        bottom_layout.addWidget(self.control_panel, 5)
+
+        main_layout.addLayout(bottom_layout, 1)
+
+        self.select_mode("onoff")
+
+    # =====================================================
+    # ÜST BAŞLIK
+    # =====================================================
+
+    def create_header(self):
         header = QHBoxLayout()
-        header.setSpacing(18)
+        header.setSpacing(12)
 
         self.header_logo = QLabel()
-        self.header_logo.setFixedSize(78, 72)
-        self.load_logo(self.header_logo, 78, 72)
+        self.header_logo.setFixedSize(64, 58)
+        self.load_logo(self.header_logo, 64, 58)
         header.addWidget(self.header_logo)
 
         title_layout = QVBoxLayout()
-        title_layout.setSpacing(4)
+        title_layout.setSpacing(3)
 
-        self.header_title = QLabel("FOCUS TEST SYSTEM")
-        self.header_title.setObjectName("headerTitle")
-        self.header_title.setFont(
-            QFont("Arial", 30, QFont.Weight.Bold)
-        )
+        title = QLabel("FOCUS TEST SYSTEM")
+        title.setObjectName("headerTitle")
+        title.setFont(QFont("Arial", 24, QFont.Weight.Bold))
 
-        self.header_subtitle = QLabel(
-            "AKTÜATÖR PERFORMANS TESTİ"
-        )
-        self.header_subtitle.setObjectName("headerSubtitle")
+        subtitle = QLabel("AKTÜATÖR PERFORMANS TESTİ")
+        subtitle.setObjectName("headerSubtitle")
 
-        title_layout.addWidget(self.header_title)
-        title_layout.addWidget(self.header_subtitle)
+        title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
         header.addLayout(title_layout)
 
-        # Başlık ile sağ taraftaki butonları ayır.
         header.addStretch()
 
         self.back_button = QPushButton("← Ana Sayfa")
-        self.back_button.setMinimumHeight(42)
-        self.back_button.setFixedWidth(125)
+        self.back_button.setMinimumHeight(40)
+        self.back_button.setFixedWidth(120)
         self.back_button.clicked.connect(
             self.back_requested.emit
         )
@@ -218,10 +192,10 @@ class MainWindow(QMainWindow):
             "● BAĞLANTI KONTROL EDİLİYOR"
         )
         self.connection_status.setObjectName("connectionStatus")
-        self.connection_status.setMinimumWidth(190)
         self.connection_status.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
+        self.connection_status.setMinimumWidth(190)
         header.addWidget(self.connection_status)
 
         self.check_connection_button = QPushButton(
@@ -230,17 +204,20 @@ class MainWindow(QMainWindow):
         self.check_connection_button.setObjectName(
             "connectionButton"
         )
-        self.check_connection_button.setMinimumHeight(42)
         self.check_connection_button.clicked.connect(
             self.manual_connection_check
         )
         header.addWidget(self.check_connection_button)
 
-        main_layout.addLayout(header)
+        return header
 
-        # ÖLÇÜM KARTLARI
-        cards_layout = QGridLayout()
-        cards_layout.setSpacing(18)
+    # =====================================================
+    # ÖLÇÜM KARTLARI
+    # =====================================================
+
+    def create_measurement_cards(self):
+        layout = QGridLayout()
+        layout.setSpacing(10)
 
         measurements = [
             ("ANLIK TORK", "Nm", "torque"),
@@ -251,83 +228,116 @@ class MainWindow(QMainWindow):
         ]
 
         for column, (name, unit, key) in enumerate(measurements):
-            card = self.create_measurement_card(name, unit, key)
-            cards_layout.addWidget(card, 0, column)
+            layout.addWidget(
+                self.create_measurement_card(name, unit, key),
+                0,
+                column,
+            )
 
-        main_layout.addLayout(cards_layout)
+        return layout
 
-        # ALT BÖLÜM
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setSpacing(20)
+    def create_measurement_card(self, name, unit, key):
+        card = QFrame()
+        card.setObjectName("measurementCard")
+        card.setMinimumHeight(135)
 
-        # GRAFİK PANELİ
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(8, 10, 8, 10)
+        layout.setSpacing(5)
+
+        title = QLabel(name)
+        title.setObjectName("measurementTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
+
+        value = QLabel(self.default_values[key])
+        value.setObjectName("measurementValue")
+        value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        unit_label = QLabel(unit)
+        unit_label.setObjectName("measurementUnit")
+        unit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(value)
+        layout.addWidget(unit_label)
+        layout.addStretch()
+
+        self.value_labels[key] = value
+
+        return card
+
+    # =====================================================
+    # GRAFİK PANELİ
+    # =====================================================
+
+    def create_graph_panel(self):
         graph_card = QFrame()
         graph_card.setObjectName("panelCard")
 
-        graph_layout = QVBoxLayout(graph_card)
-        graph_layout.setContentsMargins(20, 18, 20, 18)
-        graph_layout.setSpacing(12)
+        layout = QVBoxLayout(graph_card)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
-        graph_header = QHBoxLayout()
+        header = QHBoxLayout()
 
-        graph_title = QLabel("GERÇEK ZAMANLI ÖLÇÜMLER")
-        graph_title.setObjectName("sectionTitle")
-        graph_header.addWidget(graph_title)
-        graph_header.addStretch()
+        title = QLabel("GERÇEK ZAMANLI ÖLÇÜMLER")
+        title.setObjectName("sectionTitle")
+        header.addWidget(title)
+        header.addStretch()
 
         self.graph_status = QLabel("● ÖLÇÜM YAPILMIYOR")
         self.graph_status.setObjectName("graphStatus")
-        graph_header.addWidget(self.graph_status)
+        header.addWidget(self.graph_status)
 
-        graph_layout.addLayout(graph_header)
+        layout.addLayout(header)
 
-        self.graph_tabs = QTabWidget()
-        self.graph_tabs.setObjectName("graphTabs")
+        # Renkli sekme butonları + grafik yığını
+        self.graph_tab_buttons = []
+        self.graph_stack = QStackedWidget()
 
-        self.graphs = {}
-        self.graph_curves = {}
-        self.graph_data = {}
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(6)
 
         graph_settings = {
-            "torque": ("Tork", "Nm", "#EF4444"),
-            "current": ("Motor Akımı", "A", "#38BDF8"),
-            "voltage": ("Motor Gerilimi", "V", "#F2C94C"),
-            "temperature": (
-                "Motor Sıcaklığı", "°C", "#F87171"
-            ),
-            "speed": ("Dönüş Hızı", "RPM", "#34D399"),
+            "torque": ("Tork", "Nm", "#FB7185", "#080808"),
+            "current": ("Motor Akımı", "A", "#38BDF8", "#080808"),
+            "voltage": ("Motor Gerilimi", "V", "#FBBF24", "#080808"),
+            "temperature": ("Motor Sıcaklığı", "°C", "#FB923C", "#080808"),
+            "speed": ("Dönüş Hızı", "RPM", "#4ADE80", "#080808"),
         }
 
-        for key, (title, unit, color) in graph_settings.items():
+        for key, (
+            name, unit, color, graph_background
+        ) in graph_settings.items():
+
             plot = pg.PlotWidget()
-            plot.setBackground("#151515")
-            plot.showGrid(x=True, y=True, alpha=0.20)
-            plot.setMinimumHeight(300)
+            plot.setBackground(graph_background)
+            plot.showGrid(x=True, y=True, alpha=0.25)
+            plot.setMinimumHeight(220)
 
             plot.setTitle(
-                f"{title} Grafiği",
-                color="#F0F0F0",
-                size="12pt",
-            )
-            plot.setLabel(
-                "left", title, units=unit, color="#B8B8B8"
-            )
-            plot.setLabel(
-                "bottom", "Zaman", units="s", color="#B8B8B8"
+                f"{name} Grafiği",
+                color=color,
+                size="13pt",
             )
 
-            plot.getAxis("left").setTextPen("#A0A0A0")
-            plot.getAxis("bottom").setTextPen("#A0A0A0")
-            plot.getAxis("left").setPen("#444444")
-            plot.getAxis("bottom").setPen("#444444")
+            plot.setLabel("left", name, units=unit, color=color)
+            plot.setLabel(
+                "bottom",
+                "Zaman",
+                units="s",
+                color=TEXT_SECONDARY,
+            )
 
-            plot.setClipToView(True)
-            plot.setDownsampling(auto=True)
+            plot.getAxis("left").setTextPen(TEXT_SECONDARY)
+            plot.getAxis("bottom").setTextPen(TEXT_SECONDARY)
 
             curve = plot.plot(
                 [],
                 [],
-                pen=pg.mkPen(color=color, width=2.5),
+                pen=pg.mkPen(color=color, width=2),
             )
 
             self.graphs[key] = plot
@@ -337,151 +347,582 @@ class MainWindow(QMainWindow):
                 "values": [],
             }
 
-            self.graph_tabs.addTab(plot, title)
+            index = self.graph_stack.addWidget(plot)
 
-        graph_layout.addWidget(self.graph_tabs)
-        bottom_layout.addWidget(graph_card, 3)
+            button = QPushButton(name)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(self.graph_tab_style(color))
+            button.clicked.connect(
+                lambda checked=False, i=index: self.select_graph_tab(i)
+            )
+            tab_row.addWidget(button)
+            self.graph_tab_buttons.append(button)
 
-        # TEST BİLGİLERİ PANELİ
-        info_card = QFrame()
-        info_card.setObjectName("panelCard")
-        info_card.setMinimumWidth(300)
+        tab_row.addStretch()
 
-        info_layout = QVBoxLayout(info_card)
-        info_layout.setContentsMargins(22, 22, 22, 22)
-        info_layout.setSpacing(16)
+        layout.addLayout(tab_row)
+        layout.addWidget(self.graph_stack, 1)
 
-        info_title = QLabel("TEST BİLGİLERİ")
-        info_title.setObjectName("sectionTitle")
-        info_layout.addWidget(info_title)
+        self.select_graph_tab(0)
 
-        self.info_logo = QLabel()
-        self.info_logo.setFixedHeight(100)
-        self.load_logo(self.info_logo, 210, 100)
-        info_layout.addWidget(self.info_logo)
+        return graph_card
 
-        # MEVCUT DURUM
-        status_card = QFrame()
-        status_card.setObjectName("statusCard")
+    # =====================================================
+    # KONTROL PANELİ
+    # =====================================================
 
-        status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(16, 14, 16, 14)
-        status_layout.setSpacing(8)
+    def create_control_panel(self):
+        outer_card = QFrame()
+        outer_card.setObjectName("panelCard")
 
-        status_caption = QLabel("MEVCUT DURUM")
-        status_caption.setObjectName("fieldCaption")
-        status_layout.addWidget(status_caption)
+        outer_layout = QVBoxLayout(outer_card)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        self.test_status = QLabel("● TEST BAŞLATILMADI")
+        content = QWidget()
+        content.setObjectName("controlContent")
+
+        control_layout = QVBoxLayout(content)
+        control_layout.setContentsMargins(12, 8, 12, 8)
+        control_layout.setSpacing(6)
+
+        # Başlık ortalandı
+        title = QLabel("AKTÜATÖR KONTROLÜ")
+        title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        control_layout.addWidget(title)
+
+        control_layout.addWidget(self.create_status_card())
+        control_layout.addWidget(self.create_mode_selector())
+
+        self.onoff_panel = self.create_onoff_panel()
+        self.proportional_panel = self.create_proportional_panel()
+
+        control_layout.addWidget(self.onoff_panel)
+        control_layout.addWidget(self.proportional_panel)
+        control_layout.addLayout(self.create_test_details())
+
+        control_layout.addStretch()
+
+        self.reset_button = QPushButton("ÖLÇÜMLERİ SIFIRLA")
+        self.reset_button.setObjectName("secondaryButton")
+        self.reset_button.setFixedHeight(34)
+        self.reset_button.clicked.connect(self.reset_measurements)
+        control_layout.addWidget(self.reset_button)
+
+        outer_layout.addWidget(content)
+
+        return outer_card
+
+    # =====================================================
+    # SİSTEM DURUMU
+    # =====================================================
+
+    def create_status_card(self):
+        card = QFrame()
+        card.setObjectName("statusCard")
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+
+        caption = QLabel("SİSTEM DURUMU")
+        caption.setObjectName("fieldCaption")
+
+        self.test_status = QLabel("● BAĞLANTI KONTROL EDİLİYOR")
         self.test_status.setObjectName("testStatus")
         self.test_status.setWordWrap(True)
-        status_layout.addWidget(self.test_status)
 
-        info_layout.addWidget(status_card)
-
-        # YÜKLEME ANİMASYONU
-        spinner_area = QVBoxLayout()
-        spinner_area.setSpacing(6)
-
-        spinner_row = QHBoxLayout()
-        spinner_row.addStretch()
-
-        self.loading_spinner = LoadingSpinner()
-        spinner_row.addWidget(self.loading_spinner)
-
-        spinner_row.addStretch()
-        spinner_area.addLayout(spinner_row)
-
-        self.test_type = QLabel("SİSTEM HAZIR")
+        self.test_type = QLabel("ON/OFF")
         self.test_type.setObjectName("testType")
-        self.test_type.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
+        self.test_type.setWordWrap(True)
+
+        layout.addWidget(caption)
+        layout.addWidget(self.test_status)
+        layout.addWidget(self.test_type)
+
+        return card
+
+    def update_system_status(self):
+        mode_text = (
+            "ON/OFF"
+            if self.current_mode == "onoff"
+            else "ORANSAL"
         )
-        spinner_area.addWidget(self.test_type)
 
-        info_layout.addLayout(spinner_area)
+        if not self.device_connected:
+            self.test_status.setText("● CİHAZ BAĞLI DEĞİL")
+            self.test_status.setStyleSheet(
+                f"color: {YELLOW}; font-weight: 700;"
+            )
 
-        # SÜRE VE SONUÇ
-        details_layout = QGridLayout()
-        details_layout.setSpacing(10)
+            self.set_test_type(
+                f"{mode_text} modu seçildi — cihaz bağlı değil",
+                YELLOW,
+            )
+            return
+
+        if self.stopped and not self.measuring:
+            self.test_status.setText("● DURDURULDU")
+            self.test_status.setStyleSheet(
+                f"color: {YELLOW}; font-weight: 700;"
+            )
+            self.set_test_type(
+                f"{mode_text} — DURDUR komutu verildi",
+                YELLOW,
+            )
+            return
+
+        if self.measuring:
+            status_text = "● ÖLÇÜM DEVAM EDİYOR"
+        elif self.actuator_running:
+            status_text = "● SİSTEM ÇALIŞIYOR"
+        else:
+            status_text = "● SİSTEM HAZIR"
+
+        self.test_status.setText(status_text)
+        self.test_status.setStyleSheet(
+            f"color: {GREEN}; font-weight: 700;"
+        )
+
+        if self.last_command_status and not self.measuring:
+            self.set_test_type(
+                f"{mode_text} — {self.last_command_status}",
+                TEXT,
+            )
+        else:
+            self.set_test_type(
+                f"{mode_text} modu seçildi — cihaz bağlı",
+                GREEN,
+            )
+
+    # =====================================================
+    # MOD SEÇİMİ
+    # =====================================================
+
+    def create_mode_selector(self):
+        container = QWidget()
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        caption = QLabel("ÇALIŞMA MODU")
+        caption.setObjectName("fieldCaption")
+        layout.addWidget(caption)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+
+        self.onoff_mode_button = QPushButton("ON/OFF")
+        self.onoff_mode_button.setObjectName("modeButton")
+        self.onoff_mode_button.setCheckable(True)
+
+        self.proportional_mode_button = QPushButton("ORANSAL")
+        self.proportional_mode_button.setObjectName("modeButton")
+        self.proportional_mode_button.setCheckable(True)
+
+        self.onoff_mode_button.clicked.connect(
+            lambda: self.select_mode("onoff")
+        )
+        self.proportional_mode_button.clicked.connect(
+            lambda: self.select_mode("proportional")
+        )
+
+        buttons.addWidget(self.onoff_mode_button)
+        buttons.addWidget(self.proportional_mode_button)
+        layout.addLayout(buttons)
+
+        return container
+
+    def select_mode(self, mode):
+        self.current_mode = (
+            "onoff" if mode == "onoff" else "proportional"
+        )
+
+        is_onoff = self.current_mode == "onoff"
+
+        self.onoff_mode_button.setChecked(is_onoff)
+        self.proportional_mode_button.setChecked(not is_onoff)
+
+        self.onoff_panel.setVisible(is_onoff)
+        self.proportional_panel.setVisible(not is_onoff)
+
+        self.update_system_status()
+
+    # =====================================================
+    # ON/OFF KONTROLÜ
+    # =====================================================
+
+    def create_onoff_panel(self):
+        panel = QFrame()
+        panel.setObjectName("controlSection")
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        title = QLabel("ON/OFF KONTROLÜ")
+        title.setObjectName("fieldCaption")
+        layout.addWidget(title)
+
+        self.open_button = QPushButton("ON")
+        self.open_button.setObjectName("openButton")
+        self.open_button.setMinimumHeight(38)
+        self.open_button.clicked.connect(self.open_actuator)
+
+        self.close_button = QPushButton("OFF")
+        self.close_button.setObjectName("closeButton")
+        self.close_button.setMinimumHeight(38)
+        self.close_button.clicked.connect(self.close_actuator)
+
+        self.stop_button = QPushButton("DURDUR")
+        self.stop_button.setObjectName("stopButton")
+        self.stop_button.setMinimumHeight(38)
+        self.stop_button.clicked.connect(self.stop_actuator)
+
+        layout.addWidget(self.open_button)
+        layout.addWidget(self.close_button)
+        layout.addWidget(self.stop_button)
+
+        return panel
+
+    # =====================================================
+    # ORANSAL AKIM KONTROLÜ
+    # =====================================================
+
+    def create_proportional_panel(self):
+        panel = QFrame()
+        panel.setObjectName("controlSection")
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+
+        title = QLabel("ORANSAL AKIM KONTROLÜ")
+        title.setObjectName("fieldCaption")
+        layout.addWidget(title)
+
+        current_header = QHBoxLayout()
+        current_header.setSpacing(4)
+
+        current_label = QLabel("Gönderilecek akım")
+        current_label.setObjectName("normalLabel")
+        current_header.addWidget(current_label)
+        current_header.addStretch()
+
+        self.current_value_label = QLabel("12.0 mA")
+        self.current_value_label.setObjectName("currentValue")
+        current_header.addWidget(self.current_value_label)
+
+        layout.addLayout(current_header)
+
+        self.current_slider = QSlider(Qt.Orientation.Horizontal)
+        self.current_slider.setRange(40, 200)
+        self.current_slider.setValue(120)
+        self.current_slider.setMaximumHeight(18)
+        self.current_slider.valueChanged.connect(
+            self.update_current_value
+        )
+        layout.addWidget(self.current_slider)
+
+        range_layout = QHBoxLayout()
+        range_layout.setSpacing(2)
+        range_layout.addWidget(QLabel("4 mA"))
+        range_layout.addStretch()
+        range_layout.addWidget(QLabel("20 mA"))
+        layout.addLayout(range_layout)
+
+        self.current_spinbox = QDoubleSpinBox()
+        self.current_spinbox.setRange(4.0, 20.0)
+        self.current_spinbox.setSingleStep(0.1)
+        self.current_spinbox.setDecimals(1)
+        self.current_spinbox.setValue(12.0)
+        self.current_spinbox.setSuffix(" mA")
+        self.current_spinbox.setFixedHeight(32)
+        self.current_spinbox.valueChanged.connect(
+            self.update_current_from_spinbox
+        )
+        layout.addWidget(self.current_spinbox)
+
+        self.send_current_button = QPushButton(
+            "HEDEF AKIMI GÖNDER"
+        )
+        self.send_current_button.setObjectName("sendCurrentButton")
+        self.send_current_button.setFixedHeight(34)
+        self.send_current_button.clicked.connect(
+            self.send_target_current
+        )
+        layout.addWidget(self.send_current_button)
+
+        position_card = QFrame()
+        position_card.setObjectName("positionCard")
+
+        position_layout = QVBoxLayout(position_card)
+        position_layout.setContentsMargins(7, 4, 7, 4)
+        position_layout.setSpacing(1)
+
+        position_title = QLabel("AKTÜATÖRÜN GERÇEK POZİSYONU")
+        position_title.setObjectName("fieldCaption")
+        position_title.setWordWrap(True)
+        position_layout.addWidget(position_title)
+
+        self.position_value = QLabel("-- %")
+        self.position_value.setObjectName("positionValue")
+        self.position_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        position_layout.addWidget(self.position_value)
+
+        position_note = QLabel("Konum göstergesi")
+        position_note.setObjectName("normalLabel")
+        position_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        position_layout.addWidget(position_note)
+
+        layout.addWidget(position_card)
+
+        panel.hide()
+
+        return panel
+
+    def update_current_value(self, slider_value):
+        current_ma = slider_value / 10.0
+
+        self.current_value_label.setText(
+            f"{current_ma:.1f} mA"
+        )
+
+        if abs(self.current_spinbox.value() - current_ma) > 0.001:
+            self.current_spinbox.blockSignals(True)
+            self.current_spinbox.setValue(current_ma)
+            self.current_spinbox.blockSignals(False)
+
+    def update_current_from_spinbox(self, current_ma):
+        slider_value = round(current_ma * 10)
+
+        if self.current_slider.value() != slider_value:
+            self.current_slider.blockSignals(True)
+            self.current_slider.setValue(slider_value)
+            self.current_slider.blockSignals(False)
+
+        self.current_value_label.setText(
+            f"{current_ma:.1f} mA"
+        )
+
+    # =====================================================
+    # TEST DETAYLARI
+    # =====================================================
+
+    def create_test_details(self):
+        layout = QGridLayout()
+        layout.setSpacing(6)
 
         duration_card = QFrame()
         duration_card.setObjectName("detailCard")
 
         duration_layout = QVBoxLayout(duration_card)
-        duration_layout.setContentsMargins(12, 14, 12, 14)
-        duration_layout.setSpacing(8)
 
-        duration_caption = QLabel("TEST SÜRESİ")
+        duration_caption = QLabel("ÖLÇÜM SÜRESİ")
         duration_caption.setObjectName("fieldCaption")
-        duration_layout.addWidget(duration_caption)
 
         self.test_duration = QLabel("00:00")
         self.test_duration.setObjectName("detailValue")
-        self.test_duration.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        self.test_duration.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        duration_layout.addWidget(duration_caption)
         duration_layout.addWidget(self.test_duration)
 
         result_card = QFrame()
         result_card.setObjectName("detailCard")
 
         result_layout = QVBoxLayout(result_card)
-        result_layout.setContentsMargins(12, 14, 12, 14)
-        result_layout.setSpacing(8)
 
-        result_caption = QLabel("TEST SONUCU")
+        result_caption = QLabel("DURUM")
         result_caption.setObjectName("fieldCaption")
-        result_layout.addWidget(result_caption)
 
         self.test_result = QLabel("BEKLENİYOR")
         self.test_result.setObjectName("detailValue")
         self.test_result.setWordWrap(True)
-        self.test_result.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        self.test_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        result_layout.addWidget(result_caption)
         result_layout.addWidget(self.test_result)
 
-        details_layout.addWidget(duration_card, 0, 0)
-        details_layout.addWidget(result_card, 0, 1)
+        layout.addWidget(duration_card, 0, 0)
+        layout.addWidget(result_card, 0, 1)
 
-        info_layout.addLayout(details_layout)
-        info_layout.addStretch()
+        return layout
 
-        # TEST BUTONLARI
-        self.start_button = QPushButton("TESTİ BAŞLAT")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.setMinimumHeight(48)
-        self.start_button.clicked.connect(self.start_loading)
+    # =====================================================
+    # AKTÜATÖR KOMUTLARI
+    # =====================================================
 
-        self.finish_button = QPushButton("ÖLÇÜMÜ TAMAMLA")
-        self.finish_button.setObjectName("finishButton")
-        self.finish_button.setMinimumHeight(44)
-        self.finish_button.clicked.connect(self.finish_loading)
-        self.finish_button.setEnabled(False)
+    def open_actuator(self):
+        if not self.device_connected:
+            self.update_system_status()
+            return
 
-        self.reset_button = QPushButton("TESTİ SIFIRLA")
-        self.reset_button.setObjectName("secondaryButton")
-        self.reset_button.setMinimumHeight(44)
-        self.reset_button.clicked.connect(self.reset_loading)
+        self.stopped = False
+        self.actuator_running = True
+        self.last_command_status = (
+            "ON seçildi; gerçek donanım komutu bağlı değil."
+        )
+        self.start_measurement()
 
-        info_layout.addWidget(self.start_button)
-        info_layout.addWidget(self.finish_button)
-        info_layout.addWidget(self.reset_button)
+    def close_actuator(self):
+        if not self.device_connected:
+            self.update_system_status()
+            return
 
-        bottom_layout.addWidget(info_card, 1)
-        main_layout.addLayout(bottom_layout, 1)
+        self.stopped = False
+        self.actuator_running = False
+        self.last_command_status = (
+            "OFF seçildi; gerçek donanım komutu bağlı değil."
+        )
+        self.stop_measurement()
+        self.test_result.setText("KAPALI")
+        self.update_system_status()
 
-    # ÖLÇÜM DEĞERLERİNİN RENGİ
-    def set_measurement_color(self, measuring):
-        color = SUCCESS if measuring else ERROR
+    def send_target_current(self):
+        if not self.device_connected:
+            self.update_system_status()
+            return
 
-        for value_label in self.values.values():
-            value_label.setStyleSheet(
-                f"color: {color}; font-size: 36px; font-weight: 700;"
-            )
+        current_ma = self.current_slider.value() / 10.0
 
-    # GRAFİK VERİSİ
+        self.stopped = False
+        self.last_command_status = (
+            f"{current_ma:.1f} mA seçildi; "
+            "gerçek donanım komutu bağlı değil."
+        )
+        self.update_system_status()
+
+    def stop_actuator(self):
+        self.stopped = True
+
+        self.stop_measurement()
+
+        self.actuator_running = False
+        self.last_command_status = ""
+
+        self.test_result.setText("DURDURULDU")
+        self.graph_status.setText("● ÖLÇÜM DURDURULDU")
+
+        self.update_system_status()
+
+    # =====================================================
+    # ÖLÇÜM KONTROLÜ
+    # =====================================================
+
+    def start_measurement(self):
+        if self.measuring:
+            return
+
+        self.stopped = False
+        self.measuring = True
+        self.actuator_running = True
+        self.start_time = time.monotonic()
+        self.elapsed_seconds = 0
+
+        self.test_duration.setText("00:00")
+        self.test_result.setText("ÖLÇÜLÜYOR")
+        self.graph_status.setText("● ÖLÇÜM DEVAM EDİYOR")
+
+        self.update_system_status()
+        self.set_measurement_color(True)
+        self.measurement_timer.start()
+
+    def stop_measurement(self):
+        self.measuring = False
+        self.measurement_timer.stop()
+
+        self.set_measurement_color(False)
+
+        if hasattr(self, "graph_status"):
+            self.graph_status.setText("● ÖLÇÜM DURDURULDU")
+
+    def reset_measurements(self):
+        self.stop_measurement()
+
+        self.stopped = False
+        self.start_time = None
+        self.elapsed_seconds = 0
+        self.actuator_running = False
+        self.last_command_status = ""
+
+        for key, value in self.default_values.items():
+            self.value_labels[key].setText(value)
+
+        self.position_value.setText("-- %")
+
+        self.clear_graphs()
+
+        self.test_duration.setText("00:00")
+        self.test_result.setText("BEKLENİYOR")
+
+        self.set_measurement_color(False)
+        self.update_system_status()
+
+    def update_elapsed_time(self):
+        if not self.measuring or self.start_time is None:
+            return
+
+        self.elapsed_seconds = int(
+            time.monotonic() - self.start_time
+        )
+
+        minutes, seconds = divmod(self.elapsed_seconds, 60)
+
+        self.test_duration.setText(
+            f"{minutes:02d}:{seconds:02d}"
+        )
+
+    # =====================================================
+    # DONANIMDAN GELEN VERİLER
+    # =====================================================
+
+    def update_measurements(self, data: dict):
+        """
+        Donanımdan gelen verileri kartlara ve grafiklere yazar.
+        Örnek:
+        {"torque": 1.2, "current": 0.8, "voltage": 12.1,
+         "temperature": 35, "speed": 1200}
+        """
+        if not self.measuring or self.start_time is None:
+            return
+
+        elapsed = time.monotonic() - self.start_time
+
+        formats = {
+            "torque": "{:.2f}",
+            "current": "{:.2f}",
+            "voltage": "{:.1f}",
+            "temperature": "{:.1f}",
+            "speed": "{:.0f}",
+        }
+
+        for key, fmt in formats.items():
+            if key not in data:
+                continue
+
+            try:
+                number = float(data[key])
+            except (TypeError, ValueError):
+                continue
+
+            self.value_labels[key].setText(fmt.format(number))
+            self.update_graph(key, number, elapsed)
+
+    def update_actuator_position(self, percent):
+        """Aktüatörün gerçek pozisyonunu (%) gösterir."""
+        try:
+            self.position_value.setText(f"{float(percent):.0f} %")
+        except (TypeError, ValueError):
+            self.position_value.setText("-- %")
+
+    # =====================================================
+    # GRAFİKLER
+    # =====================================================
+
     def update_graph(self, key, value, elapsed_seconds):
         if key not in self.graph_curves:
             return
@@ -493,6 +934,7 @@ class MainWindow(QMainWindow):
             return
 
         data = self.graph_data[key]
+
         data["time"].append(elapsed_seconds)
         data["values"].append(value)
 
@@ -509,6 +951,40 @@ class MainWindow(QMainWindow):
 
         self.graph_status.setText("● VERİ ALINIYOR")
 
+    def graph_tab_style(self, color):
+        c = QColor(color)
+        r, g, b = c.red(), c.green(), c.blue()
+
+        return f"""
+            QPushButton {{
+                background-color: rgba({r}, {g}, {b}, 28);
+                color: {color};
+                border: 1px solid rgba({r}, {g}, {b}, 130);
+                border-radius: 6px;
+                padding: 10px 13px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QPushButton:hover {{
+                background-color: rgba({r}, {g}, {b}, 70);
+                border: 1px solid {color};
+            }}
+
+            QPushButton:checked {{
+                background-color: {color};
+                color: #000000;
+                border: 1px solid {color};
+                font-weight: 800;
+            }}
+        """
+
+    def select_graph_tab(self, index):
+        self.graph_stack.setCurrentIndex(index)
+
+        for i, button in enumerate(self.graph_tab_buttons):
+            button.setChecked(i == index)
+
     def clear_graphs(self):
         for key in self.graph_data:
             self.graph_data[key]["time"].clear()
@@ -516,165 +992,103 @@ class MainWindow(QMainWindow):
             self.graph_curves[key].setData([], [])
 
         self.graph_status.setText("● ÖLÇÜM YAPILMIYOR")
-        self.graph_status.setStyleSheet("")
 
-    # TEST DURUMU YAZISI
-    def set_test_type(self, text, color="#F0F0F0"):
+    def set_test_type(self, text, color=TEXT):
         self.test_type.setText(text)
         self.test_type.setStyleSheet(
-            f"color: {color}; font-weight: 700;"
+            f"color: {color}; font-weight: 600;"
         )
 
-    # TESTİ BAŞLAT
-    def start_loading(self):
-        if self.measuring:
-            return
+    def set_measurement_color(self, measuring):
+        color = GREEN if measuring else TEXT
 
-        self.measuring = True
-        self.start_time = time.monotonic()
-        self.elapsed_seconds = 0
-        self.test_duration.setText("00:00")
+        for label in self.value_labels.values():
+            label.setStyleSheet(
+                f"color: {color}; "
+                "font-size: 34px; "
+                "font-weight: 800;"
+            )
 
-        self.loading_spinner.set_status("running")
-        self.set_measurement_color(True)
-
-        self.test_status.setText("● TEST DEVAM EDİYOR")
-        self.set_test_type("ÖLÇÜM YAPILIYOR", WARNING)
-        self.test_result.setText("ÖLÇÜLÜYOR")
-
-        self.test_status.setStyleSheet(f"color: {WARNING};")
-        self.test_result.setStyleSheet(f"color: {WARNING};")
-
-        self.graph_status.setText("● ÖLÇÜM DEVAM EDİYOR")
-        self.start_button.setEnabled(False)
-        self.finish_button.setEnabled(True)
-
-        self.measurement_timer.start()
-
-    # ÖLÇÜMÜ TAMAMLA
-    def finish_loading(self):
-        if not self.measuring:
-            return
-
-        self.measuring = False
-        self.measurement_timer.stop()
-
-        self.loading_spinner.set_status("completed")
-        self.set_measurement_color(False)
-
-        self.test_status.setText("● ÖLÇÜM TAMAMLANDI")
-        self.set_test_type("TEST TAMAMLANDI", SUCCESS)
-        self.test_result.setText("TAMAMLANDI")
-
-        self.test_status.setStyleSheet(f"color: {SUCCESS};")
-        self.test_result.setStyleSheet(f"color: {SUCCESS};")
-
-        self.graph_status.setText("● ÖLÇÜM TAMAMLANDI")
-
-        self.start_button.setEnabled(True)
-        self.finish_button.setEnabled(False)
-
-    # TESTİ SIFIRLA
-    def reset_loading(self):
-        self.measuring = False
-        self.measurement_timer.stop()
-
-        self.loading_spinner.set_status("idle")
-
-        self.start_time = None
-        self.elapsed_seconds = 0
-
-        defaults = {
-            "torque": "0.00",
-            "current": "0.00",
-            "voltage": "0.0",
-            "temperature": "0.0",
-            "speed": "0",
-        }
-
-        for key, default_value in defaults.items():
-            self.values[key].setText(default_value)
-
-        self.set_measurement_color(False)
-        self.clear_graphs()
-
-        self.test_status.setText("● TEST BAŞLATILMADI")
-        self.set_test_type("SİSTEM HAZIR", "#F0F0F0")
-
-        self.test_duration.setText("00:00")
-        self.test_result.setText("BEKLENİYOR")
-
-        self.test_status.setStyleSheet(f"color: {ERROR};")
-        self.test_result.setStyleSheet(f"color: {ERROR};")
-
-        self.start_button.setEnabled(True)
-        self.finish_button.setEnabled(False)
-
-    # TEST SÜRESİ
-    def update_elapsed_time(self):
-        if not self.measuring or self.start_time is None:
-            return
-
-        self.elapsed_seconds = int(
-            time.monotonic() - self.start_time
-        )
-
-        minutes, seconds = divmod(self.elapsed_seconds, 60)
-        self.test_duration.setText(
-            f"{minutes:02d}:{seconds:02d}"
-        )
-
+    # =====================================================
     # DONANIM BAĞLANTISI
+    # =====================================================
+
+    def handle_connection_lost(self):
+        """Bağlantı koparsa çalışan ölçümü durdurur."""
+        if self.measuring:
+            self.stop_measurement()
+            self.test_result.setText("BAĞLANTI KOPTU")
+
+        self.actuator_running = False
+
     def check_hardware_connection(self):
         try:
             result = self.connection_manager.find_esp32()
 
             if result and result.get("connected"):
-                message = (
-                    f"● DONANIM BAĞLI ({result.get('port', '')})"
-                )
-                self.set_connection_status("connected", message)
-            else:
+                self.device_connected = True
+                self.device_port = result.get("port", "")
+
                 self.set_connection_status(
-                    "disconnected",
+                    True,
+                    f"● DONANIM BAĞLI ({self.device_port})",
+                )
+            else:
+                self.device_connected = False
+                self.device_port = ""
+                self.handle_connection_lost()
+
+                self.set_connection_status(
+                    False,
                     "● DONANIM BAĞLI DEĞİL",
                 )
 
         except Exception as error:
-            print(
-                f"Donanım bağlantı kontrolü başarısız: {error}"
-            )
+            print(f"Bağlantı kontrolü başarısız: {error}")
+
+            self.device_connected = False
+            self.device_port = ""
+            self.handle_connection_lost()
+
             self.set_connection_status(
-                "disconnected",
+                False,
                 "● DONANIM BAĞLI DEĞİL",
             )
 
+        self.update_system_status()
+
     def manual_connection_check(self):
+        self.check_connection_button.setEnabled(False)
+
         self.set_connection_status(
-            "checking",
+            None,
             "● BAĞLANTI KONTROL EDİLİYOR",
         )
 
         QTimer.singleShot(
             250,
-            self.check_hardware_connection,
+            self._finish_manual_check,
         )
 
-    def set_connection_status(self, status, message):
+    def _finish_manual_check(self):
+        self.check_hardware_connection()
+        self.check_connection_button.setEnabled(True)
+
+    def set_connection_status(self, connected, message):
         self.connection_status.setText(message)
 
-        if status == "connected":
-            color = SUCCESS
-            background = "#142B22"
-            border = "#24543E"
-        elif status == "checking":
-            color = WARNING
-            background = "#302718"
-            border = "#5A4527"
+        if connected is True:
+            color = GREEN
+            background = "#101F17"
+            border = "#2F855A"
+        elif connected is None:
+            color = YELLOW
+            background = "#211B0D"
+            border = "#927126"
         else:
-            color = ERROR
-            background = "#321B1B"
-            border = "#5B2929"
+            color = RED
+            background = "#211012"
+            border = "#9F3A4B"
 
         self.connection_status.setStyleSheet(f"""
             QLabel#connectionStatus {{
@@ -682,95 +1096,32 @@ class MainWindow(QMainWindow):
                 background-color: {background};
                 border: 1px solid {border};
                 border-radius: 8px;
-                padding: 10px 14px;
+                padding: 8px;
                 font-size: 12px;
                 font-weight: 700;
             }}
         """)
 
-    # ÖLÇÜM KARTLARI
-    def create_measurement_card(self, name, unit, key):
-        card = QFrame()
-        card.setObjectName("measurementCard")
-        card.setMinimumSize(150, 190)
+    # =====================================================
+    # LOGO
+    # =====================================================
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 18, 16, 18)
-        layout.setSpacing(12)
-
-        title = QLabel(name)
-        title.setObjectName("measurementTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setWordWrap(True)
-
-        value = QLabel(self.values[key])
-        value.setObjectName("measurementValue")
-        value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        value.setStyleSheet(
-            "color: #F87171; font-size: 36px; font-weight: 700;"
-        )
-
-        unit_label = QLabel(unit)
-        unit_label.setObjectName("measurementUnit")
-        unit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(value)
-        layout.addWidget(unit_label)
-        layout.addStretch()
-
-        self.values[key] = value
-        return card
-
-    # ŞEFFAF LOGO
     def load_logo(self, label, width, height):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground,
-            True,
-        )
-        label.setStyleSheet(
-            "QLabel { background-color: transparent; border: none; }"
-        )
 
-        logo = QImage(str(LOGO_PATH))
+        logo = QPixmap(str(LOGO_PATH))
 
         if logo.isNull():
             label.setText("FOCUS")
-            label.setStyleSheet(f"""
-                QLabel {{
-                    background-color: transparent;
-                    border: none;
-                    color: {PURPLE};
-                    font-size: 22px;
-                    font-weight: bold;
-                }}
-            """)
-            print(f"Logo yüklenemedi: {LOGO_PATH}")
+            label.setStyleSheet(
+                f"color: {TEXT}; "
+                "font-size: 20px; "
+                "font-weight: bold;"
+            )
             return
 
-        logo = logo.convertToFormat(
-            QImage.Format.Format_ARGB32
-        )
-
-        # Siyah arka plan piksellerini şeffaf yap.
-        for y in range(logo.height()):
-            for x in range(logo.width()):
-                pixel = logo.pixelColor(x, y)
-
-                if (
-                    pixel.red() < 20
-                    and pixel.green() < 20
-                    and pixel.blue() < 20
-                ):
-                    pixel.setAlpha(0)
-                    logo.setPixelColor(x, y, pixel)
-
-        pixmap = QPixmap.fromImage(logo)
-
         label.setPixmap(
-            pixmap.scaled(
+            logo.scaled(
                 width,
                 height,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -778,7 +1129,10 @@ class MainWindow(QMainWindow):
             )
         )
 
-    # ARAYÜZ STİLLERİ
+    # =====================================================
+    # STİLLER - SİYAH TEMA
+    # =====================================================
+
     def apply_styles(self):
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -787,225 +1141,299 @@ class MainWindow(QMainWindow):
 
             QWidget#centralWidget {{
                 background-color: {BACKGROUND};
-                color: {TEXT_DARK};
+                color: {TEXT};
                 font-family: "Segoe UI";
                 font-size: 14px;
             }}
 
+            QWidget#controlContent {{
+                background-color: {PANEL};
+            }}
+
             QLabel {{
-                color: {TEXT_DARK};
+                color: {TEXT};
                 background: transparent;
                 border: none;
             }}
 
             QLabel#headerTitle {{
-                font-family: "Arial";
-                font-size: 30px;
+                font-size: 25px;
                 font-weight: 700;
-                color: #F87171;
+                color: #FFFFFF;
             }}
 
             QLabel#headerSubtitle {{
-                color: {TEXT_SECONDARY};
-                font-size: 14px;
-                font-weight: 500;
+                color: #A3A3A3;
+                font-size: 13px;
             }}
 
             QFrame#measurementCard,
             QFrame#panelCard {{
-                background-color: {WHITE};
+                background-color: #080808;
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 10px;
             }}
 
             QLabel#measurementTitle {{
-                color: #B8B8B8;
-                font-size: 13px;
-                font-weight: 600;
+                color: {TEXT_SECONDARY};
+                font-size: 12px;
+                font-weight: 700;
             }}
 
             QLabel#measurementValue {{
-                color: {ERROR};
-                font-size: 36px;
-                font-weight: 700;
+                color: {TEXT};
+                font-size: 34px;
+                font-weight: 800;
             }}
 
             QLabel#measurementUnit {{
                 color: {TEXT_SECONDARY};
-                font-size: 14px;
-            }}
-
-            QLabel#sectionTitle {{
-                color: {TEXT_DARK};
-                font-size: 18px;
-                font-weight: 700;
-                padding-bottom: 5px;
-            }}
-
-            QTabWidget#graphTabs::pane {{
-                background-color: #151515;
-                border: 1px solid #5B2929;
-                border-radius: 7px;
-                top: -1px;
-            }}
-
-            QTabWidget#graphTabs QTabBar::tab {{
-                background-color: #241818;
-                color: #F0F0F0;
-                border: 1px solid #4A2626;
-                padding: 10px 14px;
-                margin-right: 4px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-
-            QTabWidget#graphTabs QTabBar::tab:selected {{
-                background-color: #991B1B;
-                color: #FFFFFF;
-                border-color: #EF4444;
-            }}
-
-            QTabWidget#graphTabs QTabBar::tab:hover {{
-                background-color: #7F1D1D;
-                color: #FFFFFF;
-                border-color: #DC2626;
-            }}
-
-            QLabel#graphStatus {{
-                color: {ERROR};
-                background-color: #321B1B;
-                border: 1px solid #5B2929;
-                border-radius: 7px;
-                padding: 7px 10px;
-                font-size: 11px;
-                font-weight: 700;
-            }}
-
-            QFrame#statusCard {{
-                background-color: #202020;
-                border: 1px solid #3A3A3A;
-                border-radius: 12px;
-            }}
-
-            QLabel#fieldCaption {{
-                color: #A0A0A0;
-                font-size: 12px;
-                font-weight: 700;
-                letter-spacing: 1px;
-            }}
-
-            QLabel#testStatus {{
-                color: {ERROR};
-                font-size: 17px;
-                font-weight: 700;
-            }}
-
-            QLabel#testType {{
-                color: #F0F0F0;
-                font-size: 15px;
-                font-weight: 800;
-                padding: 4px;
-            }}
-
-            QFrame#detailCard {{
-                background-color: #202020;
-                border: 1px solid #383838;
-                border-radius: 11px;
-            }}
-
-            QLabel#detailValue {{
-                color: #F0E9FF;
-                font-size: 19px;
-                font-weight: 700;
-            }}
-
-            QPushButton {{
-                background-color: #292929;
-                color: {TEXT_DARK};
-                border: 1px solid #414141;
-                border-radius: 8px;
-                padding: 10px 12px;
                 font-size: 13px;
                 font-weight: 600;
             }}
 
-            QPushButton#primaryButton {{
-                background-color: #B91C1C;
-                color: white;
-                border: 1px solid #EF4444;
+            QLabel#sectionTitle {{
+                color: #E5E5E5;
+                font-size: 17px;
+                font-weight: 700;
+            }}
+
+            QFrame#statusCard {{
+                background-color: #0C0C0C;
+                border: 1px solid #303030;
                 border-radius: 9px;
-                padding: 12px;
+            }}
+
+            QFrame#controlSection {{
+                background-color: #0C0C0C;
+                border: 1px solid #303030;
+                border-radius: 9px;
+            }}
+
+            QFrame#detailCard {{
+                background-color: #101010;
+                border: 1px solid #303030;
+                border-radius: 9px;
+            }}
+
+            QFrame#positionCard {{
+                background-color: #080808;
+                border: 1px solid #164E63;
+                border-radius: 9px;
+            }}
+
+            QLabel#fieldCaption {{
+                color: #A3A3A3;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QLabel#testStatus {{
+                font-size: 16px;
+                font-weight: 700;
+            }}
+
+            QLabel#testType {{
+                color: {TEXT_SECONDARY};
+                font-size: 14px;
+            }}
+
+            QLabel#positionValue {{
+                color: #67E8F9;
+                font-size: 32px;
+                font-weight: 800;
+            }}
+
+            QLabel#currentValue {{
+                color: #C4B5FD;
+                font-size: 23px;
+                font-weight: 800;
+            }}
+
+            QLabel#normalLabel {{
+                color: #E5E5E5;
+                font-size: 14px;
+            }}
+
+            QLabel#detailValue {{
+                color: #F5F5F5;
+                font-size: 19px;
+                font-weight: 700;
+                padding: 4px;
+            }}
+
+            QLabel#graphStatus {{
+                color: #BAE6FD;
+                background-color: #080808;
+                border: 1px solid #164E63;
+                border-radius: 6px;
+                padding: 6px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+
+            QPushButton {{
+                background-color: #202020;
+                color: #F5F5F5;
+                border: 1px solid #404040;
+                border-radius: 7px;
+                padding: 8px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+
+            QPushButton:hover {{
+                background-color: #303030;
+                border-color: #737373;
+            }}
+
+            QPushButton:disabled {{
+                color: #666666;
+                background-color: #111111;
+                border-color: #262626;
+            }}
+
+            QPushButton#modeButton {{
+                background-color: #151515;
+                border: 1px solid #404040;
+            }}
+
+            QPushButton#modeButton:hover {{
+                background-color: #292929;
+            }}
+
+            QPushButton#modeButton:checked {{
+                background-color: #1D4ED8;
+                border: 1px solid #60A5FA;
+                color: #FFFFFF;
+            }}
+
+            QPushButton#openButton {{
+                background-color: #166534;
+                border: 2px solid #4ADE80;
+                color: #FFFFFF;
+                font-size: 15px;
+                font-weight: 700;
+            }}
+
+            QPushButton#openButton:hover {{
+                background-color: #15803D;
+                border-color: #86EFAC;
+            }}
+
+            QPushButton#closeButton {{
+                background-color: #92400E;
+                border: 2px solid #FBBF24;
+                color: #FFFFFF;
+                font-size: 15px;
+                font-weight: 700;
+            }}
+
+            QPushButton#closeButton:hover {{
+                background-color: #A16207;
+                border-color: #FDE68A;
+            }}
+
+            QPushButton#stopButton {{
+                background-color: #7F1D1D;
+                border: 2px solid #F87171;
+                color: #FFFFFF;
                 font-size: 15px;
                 font-weight: 800;
             }}
 
-            QPushButton#primaryButton:hover {{
-                background-color: #DC2626;
+            QPushButton#stopButton:hover {{
+                background-color: #991B1B;
+                border-color: #FCA5A5;
             }}
 
-            QPushButton#primaryButton:disabled {{
-                background-color: #3A2020;
-                color: #A0A0A0;
-                border: 1px solid #5B2929;
-            }}
-
-            QPushButton#finishButton {{
-                background-color: #166534;
-                color: white;
-                border: 1px solid #22C55E;
-                border-radius: 9px;
-                padding: 11px;
+            QPushButton#sendCurrentButton {{
+                background-color: #5B21B6;
+                border: 1px solid #A78BFA;
+                color: #FFFFFF;
                 font-size: 14px;
                 font-weight: 700;
             }}
 
-            QPushButton#finishButton:hover {{
-                background-color: #15803D;
-            }}
-
-            QPushButton#finishButton:disabled {{
-                background-color: #202020;
-                color: #777777;
-                border: 1px solid #383838;
+            QPushButton#sendCurrentButton:hover {{
+                background-color: #6D28D9;
+                border-color: #C4B5FD;
             }}
 
             QPushButton#secondaryButton {{
-                background-color: #B91C1C;
-                color: white;
-                border: 1px solid #EF4444;
-                border-radius: 9px;
-                padding: 11px;
-                font-size: 14px;
+                background-color: #202020;
+                border: 1px solid #525252;
+                color: #F5F5F5;
                 font-weight: 700;
             }}
 
             QPushButton#secondaryButton:hover {{
-                background-color: #DC2626;
+                background-color: #303030;
+                border-color: #A3A3A3;
             }}
 
             QPushButton#connectionButton {{
-                background-color: #F0F0F0;
-                color: #1B1B1B;
-                border: 1px solid #D0D0D0;
-                border-radius: 8px;
-                padding: 10px 12px;
+                background-color: #0E7490;
+                color: #FFFFFF;
+                border: 1px solid #22D3EE;
                 font-size: 12px;
                 font-weight: 700;
             }}
 
             QPushButton#connectionButton:hover {{
-                background-color: #D9D9D9;
+                background-color: #155E75;
+                border-color: #67E8F9;
             }}
 
-            QPushButton:disabled {{
-                color: #777777;
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: #303030;
+                border-radius: 3px;
+            }}
+
+            QSlider::sub-page:horizontal {{
+                background: #8B5CF6;
+                border-radius: 3px;
+            }}
+
+            QSlider::handle:horizontal {{
+                background: #C4B5FD;
+                border: 2px solid #8B5CF6;
+                width: 16px;
+                margin: -6px 0;
+                border-radius: 8px;
+            }}
+
+            QSlider::handle:horizontal:hover {{
+                background: #E9D5FF;
+            }}
+
+            QDoubleSpinBox {{
+                background-color: #101010;
+                color: #F5F5F5;
+                border: 1px solid #404040;
+                border-radius: 6px;
+                padding: 5px;
+                font-size: 14px;
+            }}
+
+            QDoubleSpinBox:focus {{
+                border: 1px solid #A78BFA;
             }}
         """)
 
+    # =====================================================
+    # KAPATMA
+    # =====================================================
+
     def closeEvent(self, event):
+        self.stop_measurement()
         self.connection_timer.stop()
-        self.measurement_timer.stop()
-        self.loading_spinner.stop()
+
+        try:
+            if hasattr(self.connection_manager, "close"):
+                self.connection_manager.close()
+        except Exception as error:
+            print(f"Bağlantı kapatılırken hata: {error}")
+
         event.accept()
