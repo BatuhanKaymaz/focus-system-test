@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from datetime import datetime
 
@@ -12,6 +11,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QPushButton,
     QSizePolicy,
+    QScrollArea,
 )
 
 
@@ -27,6 +27,8 @@ GREEN = "#48D597"
 
 class HomePage(QWidget):
     actuator_test_requested = Signal()
+    fault_detection_requested = Signal()
+    records_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -35,6 +37,8 @@ class HomePage(QWidget):
         self.setAttribute(
             Qt.WidgetAttribute.WA_StyledBackground, True
         )
+
+        self.logo_pixmap = self.load_logo()
 
         self.setup_ui()
         self.apply_styles()
@@ -69,7 +73,6 @@ class HomePage(QWidget):
         )
 
         # Siyah arka planı şeffaflaştır.
-        # Beyaz ve kırmızı logo yazılarını koru.
         for y in range(image.height()):
             for x in range(image.width()):
                 color = image.pixelColor(x, y)
@@ -84,12 +87,7 @@ class HomePage(QWidget):
 
         return QPixmap.fromImage(image)
 
-    def create_logo_label(
-        self,
-        max_width,
-        max_height,
-        object_name,
-    ):
+    def create_logo_label(self, object_name):
         label = QLabel()
         label.setObjectName(object_name)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -99,57 +97,101 @@ class HomePage(QWidget):
             QSizePolicy.Policy.Expanding,
         )
 
-        pixmap = self.load_logo()
-
-        if not pixmap.isNull():
-            label.setPixmap(
-                pixmap.scaled(
-                    max_width,
-                    max_height,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        else:
+        if self.logo_pixmap.isNull():
             label.setText("FOCUS")
             label.setObjectName("logoFallback")
 
         return label
 
+    def resize_logo(self, label, max_width, max_height):
+        if self.logo_pixmap.isNull():
+            return
+
+        available_width = max(1, min(label.width(), max_width))
+        available_height = max(1, min(label.height(), max_height))
+
+        label.setPixmap(
+            self.logo_pixmap.scaled(
+                available_width,
+                available_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        if hasattr(self, "small_logo"):
+            self.resize_logo(
+                self.small_logo, 150, 48
+            )
+
+        if hasattr(self, "large_logo"):
+            self.resize_logo(
+                self.large_logo, 440, 270
+            )
+
     # ------------------------------------------------------
-    # ANA ARAYUZ
+    # ANA ARAYÜZ
     # ------------------------------------------------------
     def setup_ui(self):
-        main = QVBoxLayout(self)
-        main.setContentsMargins(32, 20, 32, 14)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("homeScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("homeContent")
+        self.content_widget.setMinimumWidth(0)
+
+        self.scroll_area.setWidget(self.content_widget)
+        outer_layout.addWidget(self.scroll_area)
+
+        main = QVBoxLayout(self.content_widget)
+        main.setContentsMargins(20, 12, 20, 10)
         main.setSpacing(0)
 
         # HEADER
         header = QHBoxLayout()
-        header.setSpacing(14)
+        header.setSpacing(10)
 
-        small_logo = self.create_logo_label(
-            125, 44, "headerLogo"
-        )
-        small_logo.setFixedSize(130, 48)
-        small_logo.setAlignment(
+        self.small_logo = self.create_logo_label("headerLogo")
+        self.small_logo.setFixedHeight(48)
+        self.small_logo.setMinimumWidth(0)
+        self.small_logo.setMaximumWidth(160)
+        self.small_logo.setAlignment(
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignVCenter
         )
 
-        header.addWidget(small_logo)
-        header.addStretch()
+        header.addWidget(self.small_logo, 1)
+        header.addStretch(1)
 
         time_layout = QVBoxLayout()
         time_layout.setSpacing(2)
 
         self.clock_label = QLabel("--:--:--")
         self.clock_label.setObjectName("clockLabel")
-        self.clock_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.clock_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight
+        )
 
         self.date_label = QLabel("--")
         self.date_label.setObjectName("dateLabel")
-        self.date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.date_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight
+        )
 
         time_layout.addWidget(self.clock_label)
         time_layout.addWidget(self.date_label)
@@ -157,28 +199,32 @@ class HomePage(QWidget):
 
         self.system_status = QLabel("● SİSTEM HAZIR")
         self.system_status.setObjectName("systemStatus")
-        self.system_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.system_status.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
         header.addWidget(self.system_status)
 
         main.addLayout(header)
-        main.addSpacing(13)
+        main.addSpacing(10)
 
         separator = QFrame()
         separator.setObjectName("separator")
         separator.setFixedHeight(1)
         main.addWidget(separator)
 
-        # --------------------------------------------------
-        # HERO: BUYUK SLOGAN + BUYUK LOGO
-        # --------------------------------------------------
+        # HERO
         main.addSpacing(12)
 
         hero = QFrame()
         hero.setObjectName("hero")
-        hero.setMinimumHeight(270)
+        hero.setMinimumWidth(0)
+        hero.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
 
         hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(14, 8, 14, 8)
+        hero_layout.setContentsMargins(12, 8, 12, 8)
         hero_layout.setSpacing(8)
 
         hero_left = QVBoxLayout()
@@ -186,25 +232,29 @@ class HomePage(QWidget):
 
         eyebrow = QLabel("FOCUS  /  ACTUATOR SYSTEMS")
         eyebrow.setObjectName("eyebrow")
+        eyebrow.setWordWrap(True)
         hero_left.addWidget(eyebrow)
 
-        hero_left.addSpacing(17)
+        hero_left.addSpacing(12)
 
         title = QLabel("Yerli Üretim,")
         title.setObjectName("pageTitle")
+        title.setWordWrap(True)
         hero_left.addWidget(title)
 
         title_second = QLabel("Küresel Kalite.")
         title_second.setObjectName("pageTitleAccent")
+        title_second.setWordWrap(True)
         hero_left.addWidget(title_second)
 
-        hero_left.addSpacing(14)
+        hero_left.addSpacing(10)
 
         subtitle = QLabel("Aktüatör Kontrol Merkezi")
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
         hero_left.addWidget(subtitle)
 
-        hero_left.addSpacing(10)
+        hero_left.addSpacing(8)
 
         description = QLabel(
             "Test süreçlerini yönet, ölçüm ekranına eriş "
@@ -215,23 +265,19 @@ class HomePage(QWidget):
         description.setMaximumWidth(470)
         hero_left.addWidget(description)
 
-        hero_left.addStretch()
+        hero_left.addStretch(1)
 
         hero_layout.addLayout(hero_left, 3)
 
-        # Logo kendi kutusu olmadan doğrudan arka planda.
-        self.large_logo = self.create_logo_label(
-            440, 270, "largeLogo"
-        )
-        self.large_logo.setMinimumWidth(250)
+        self.large_logo = self.create_logo_label("largeLogo")
+        self.large_logo.setMinimumWidth(0)
+        self.large_logo.setMinimumHeight(140)
 
         hero_layout.addWidget(self.large_logo, 2)
 
         main.addWidget(hero)
 
-        # --------------------------------------------------
-        # KISA BILGI KARTLARI
-        # --------------------------------------------------
+        # KISA BİLGİ KARTLARI
         main.addSpacing(10)
 
         summary_layout = QHBoxLayout()
@@ -249,29 +295,31 @@ class HomePage(QWidget):
         self.create_summary_card(
             summary_layout,
             "02",
-            "KART DİAGNOSTİĞİ",
-            "Elektronik kart inceleme",
-            "GELİŞTİRİLİYOR",
+            "ARIZA TESPİTİ",
+            "Röle, optokuplör ve kablolama bağlantı kontrolleri",
+            "ARAYÜZ HAZIR",
             "#F2C94C",
         )
 
         main.addLayout(summary_layout)
 
-        # --------------------------------------------------
-        # MODULLER
-        # --------------------------------------------------
+        # MODÜLLER
         main.addSpacing(14)
 
         section_header = QHBoxLayout()
+        section_header.setSpacing(8)
 
         section_title = QLabel("İŞLEM MODÜLLERİ")
         section_title.setObjectName("sectionTitle")
         section_header.addWidget(section_title)
 
-        section_header.addStretch()
+        section_header.addStretch(1)
 
-        section_count = QLabel("01 AKTİF  /  02 MODÜL")
+        section_count = QLabel("03 AKTİF  /  03 MODÜL")
         section_count.setObjectName("sectionCount")
+        section_count.setAlignment(
+            Qt.AlignmentFlag.AlignRight
+        )
         section_header.addWidget(section_count)
 
         main.addLayout(section_header)
@@ -294,27 +342,44 @@ class HomePage(QWidget):
 
         self.diagnostics_card = self.create_module_card(
             number="02",
-            title="Kart Diagnostiği",
+            title="Arıza Tespiti",
             description=(
-                "Elektronik kontrol kartının durumunu "
-                "incelemek ve donanım arızalarını "
-                "araştırmak için kullanılacak modül."
+                "Röle, optokuplör ve kablolama "
+                "bağlantılarını kontrol et."
             ),
-            status="YAKINDA",
-            active=False,
+            status="ARIZA TESPİTİNİ AÇ",
+            active=True,
+        )
+
+        self.records_card = self.create_module_card(
+            number="03",
+            title="Kayıt Geçmişi",
+            description=(
+                "Kartları seri numarasına göre bul; test ve arıza "
+                "kayıtlarını incele, seçtiklerini sil."
+            ),
+            status="KAYIT GEÇMİŞİNİ AÇ",
+            active=True,
         )
 
         self.actuator_card.clicked.connect(
             self.actuator_test_requested.emit
         )
+        self.diagnostics_card.clicked.connect(
+            self.fault_detection_requested.emit
+        )
+        self.records_card.clicked.connect(self.records_requested.emit)
 
-        cards.addWidget(self.actuator_card, 3)
-        cards.addWidget(self.diagnostics_card, 2)
+        cards.addWidget(self.actuator_card, 1)
+        cards.addWidget(self.diagnostics_card, 1)
+        cards.addWidget(self.records_card, 1)
 
         main.addLayout(cards)
         main.addStretch(1)
 
         # FOOTER
+        main.addSpacing(12)
+
         footer_line = QFrame()
         footer_line.setObjectName("separator")
         footer_line.setFixedHeight(1)
@@ -323,21 +388,25 @@ class HomePage(QWidget):
         main.addSpacing(7)
 
         footer = QHBoxLayout()
+        footer.setSpacing(8)
 
         footer_left = QLabel("FOCUS  /  ACTUATOR SYSTEMS")
         footer_left.setObjectName("footerText")
         footer.addWidget(footer_left)
 
-        footer.addStretch()
+        footer.addStretch(1)
 
         self.footer_status = QLabel("CONTROL CENTER  •  v1.0")
         self.footer_status.setObjectName("footerText")
+        self.footer_status.setAlignment(
+            Qt.AlignmentFlag.AlignRight
+        )
         footer.addWidget(self.footer_status)
 
         main.addLayout(footer)
 
     # ------------------------------------------------------
-    # BILGI KARTI
+    # BİLGİ KARTI
     # ------------------------------------------------------
     def create_summary_card(
         self,
@@ -350,25 +419,34 @@ class HomePage(QWidget):
     ):
         card = QFrame()
         card.setObjectName("summaryCard")
+        card.setMinimumWidth(0)
         card.setMinimumHeight(72)
-        card.setMaximumHeight(84)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(3)
 
         top = QHBoxLayout()
+        top.setSpacing(5)
 
         number_label = QLabel(number)
         number_label.setObjectName("summaryNumber")
         top.addWidget(number_label)
 
-        top.addStretch()
+        top.addStretch(1)
 
         status_label = QLabel(status)
         status_label.setObjectName("summaryStatus")
         status_label.setStyleSheet(
             f"color: {status_color};"
+        )
+        status_label.setWordWrap(True)
+        status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight
         )
         top.addWidget(status_label)
 
@@ -376,6 +454,7 @@ class HomePage(QWidget):
 
         title_label = QLabel(title)
         title_label.setObjectName("summaryTitle")
+        title_label.setWordWrap(True)
         layout.addWidget(title_label)
 
         description_label = QLabel(description)
@@ -386,7 +465,7 @@ class HomePage(QWidget):
         parent_layout.addWidget(card, 1)
 
     # ------------------------------------------------------
-    # MODUL KARTI
+    # MODÜL KARTI
     # ------------------------------------------------------
     def create_module_card(
         self,
@@ -407,12 +486,16 @@ class HomePage(QWidget):
             else Qt.CursorShape.ArrowCursor
         )
         card.setEnabled(active)
-        card.setMinimumHeight(125)
-        card.setMaximumHeight(150)
+        card.setMinimumWidth(0)
+        card.setMinimumHeight(110)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(0)
 
         top = QHBoxLayout()
@@ -426,7 +509,7 @@ class HomePage(QWidget):
         )
         top.addWidget(number_label)
 
-        top.addStretch()
+        top.addStretch(1)
 
         icon = QLabel("↗" if active else "—")
         icon.setObjectName(
@@ -466,7 +549,7 @@ class HomePage(QWidget):
         )
         layout.addWidget(description_label)
 
-        layout.addStretch()
+        layout.addStretch(1)
 
         bottom_line = QFrame()
         bottom_line.setObjectName(
@@ -487,12 +570,13 @@ class HomePage(QWidget):
             if active
             else "inactiveCardStatus"
         )
+        status_label.setWordWrap(True)
         status_label.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents
         )
         bottom.addWidget(status_label)
 
-        bottom.addStretch()
+        bottom.addStretch(1)
 
         if active:
             dot = QLabel("●")
@@ -507,7 +591,7 @@ class HomePage(QWidget):
         return card
 
     # ------------------------------------------------------
-    # SAAT
+    # CANLI SAAT
     # ------------------------------------------------------
     def update_clock(self):
         now = datetime.now()
@@ -515,14 +599,20 @@ class HomePage(QWidget):
         self.date_label.setText(now.strftime("%d.%m.%Y"))
 
     # ------------------------------------------------------
-    # STIL
+    # STİLLER
     # ------------------------------------------------------
     def apply_styles(self):
         self.setStyleSheet("""
-            QWidget#homePage {
+            QWidget#homePage,
+            QWidget#homeContent {
                 background-color: #0B0B0D;
                 color: #F4F4F5;
                 font-family: "Segoe UI";
+            }
+
+            QScrollArea#homeScrollArea {
+                background-color: #0B0B0D;
+                border: none;
             }
 
             QLabel {
@@ -534,14 +624,12 @@ class HomePage(QWidget):
                 color: #FFFFFF;
                 font-size: 24px;
                 font-weight: 800;
-                letter-spacing: 2px;
             }
 
             QLabel#logoFallback {
                 color: #FFFFFF;
-                font-size: 32px;
+                font-size: 28px;
                 font-weight: 900;
-                letter-spacing: 3px;
                 background-color: transparent;
                 border: none;
             }
@@ -568,7 +656,7 @@ class HomePage(QWidget):
                 background-color: #12251C;
                 border: 1px solid #244735;
                 border-radius: 7px;
-                padding: 8px 11px;
+                padding: 7px 9px;
                 font-size: 10px;
                 font-weight: 800;
             }
@@ -581,31 +669,29 @@ class HomePage(QWidget):
             QFrame#hero {
                 background-color: #0B0B0D;
                 border: none;
-                border-radius: 0px;
             }
 
             QLabel#eyebrow {
                 color: #F0444B;
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 800;
-                letter-spacing: 2px;
             }
 
             QLabel#pageTitle {
                 color: #FAFAFA;
-                font-size: 44px;
+                font-size: 36px;
                 font-weight: 800;
             }
 
             QLabel#pageTitleAccent {
                 color: #E5222A;
-                font-size: 44px;
+                font-size: 36px;
                 font-weight: 800;
             }
 
             QLabel#pageSubtitle {
                 color: #DADAE0;
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: 700;
             }
 
@@ -651,14 +737,12 @@ class HomePage(QWidget):
                 color: #D8D8DC;
                 font-size: 10px;
                 font-weight: 800;
-                letter-spacing: 2px;
             }
 
             QLabel#sectionCount {
                 color: #66666E;
                 font-size: 10px;
                 font-weight: 700;
-                letter-spacing: 1px;
             }
 
             QPushButton#activeCard {
@@ -693,14 +777,12 @@ class HomePage(QWidget):
                 color: #F0444B;
                 font-size: 11px;
                 font-weight: 800;
-                letter-spacing: 2px;
             }
 
             QLabel#inactiveNumber {
                 color: #55555B;
                 font-size: 11px;
                 font-weight: 800;
-                letter-spacing: 2px;
             }
 
             QLabel#activeIcon {
@@ -750,14 +832,12 @@ class HomePage(QWidget):
                 color: #FFFFFF;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1px;
             }
 
             QLabel#inactiveCardStatus {
                 color: #65656C;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1px;
             }
 
             QLabel#activeDot {
@@ -769,6 +849,5 @@ class HomePage(QWidget):
                 color: #626269;
                 font-size: 9px;
                 font-weight: 700;
-                letter-spacing: 1px;
             }
         """)

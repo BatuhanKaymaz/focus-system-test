@@ -1,4 +1,5 @@
 import sys
+import re
 import time
 from pathlib import Path
 
@@ -8,13 +9,17 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStackedWidget,
     QVBoxLayout,
@@ -22,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from hardware.serial import ConnectionManager
+from database import FocusDatabase
 
 
 # =========================================================
@@ -67,14 +73,18 @@ LOGO_PATH = resource_path("assets/focus_logo.png")
 
 class MainWindow(QMainWindow):
     back_requested = Signal()
+    test_saved = Signal(str, int)
 
-    def __init__(self):
+    def __init__(self, database=None):
         super().__init__()
 
         self.setWindowTitle("Focus Test System")
-        self.resize(1440, 900)
-        self.setMinimumSize(1050, 700)
+        # Pencere boyutunu sabitleme; farklı ekranlara ve gömülü sayfaya uyum sağla.
+        self.resize(1200, 760)
+        self.setMinimumSize(0, 0)
 
+        self.database = database or FocusDatabase()
+        self.active_serial = None
         self.connection_manager = ConnectionManager()
         self.device_connected = False
         self.device_port = ""
@@ -102,9 +112,10 @@ class MainWindow(QMainWindow):
         self.graphs = {}
         self.graph_curves = {}
         self.graph_data = {}
+        self._ui_scale = 1.0
 
         self.setup_ui()
-        self.apply_styles()
+        self._fit_layout_to_window()
         self.set_measurement_color(False)
 
         self.measurement_timer = QTimer(self)
@@ -132,13 +143,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(20, 16, 20, 18)
-        main_layout.setSpacing(14)
+        self.main_layout = main_layout
+        main_layout.setContentsMargins(16, 12, 16, 14)
+        main_layout.setSpacing(10)
 
         main_layout.addLayout(self.create_header())
         main_layout.addLayout(self.create_measurement_cards())
 
         bottom_layout = QHBoxLayout()
+        self.bottom_layout = bottom_layout
         bottom_layout.setSpacing(14)
 
         self.graph_panel = self.create_graph_panel()
@@ -151,6 +164,84 @@ class MainWindow(QMainWindow):
 
         self.select_mode("onoff")
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_layout_to_window()
+
+    def _fit_layout_to_window(self):
+        """Ölçekler arayüzü; kart ve panel yerleşimini değiştirmez."""
+        if not hasattr(self, "main_layout"):
+            return
+
+        scale = min(self.width() / 1366, self.height() / 768)
+        scale = max(0.10, min(scale, 4.0))
+        if abs(scale - self._ui_scale) < 0.015:
+            return
+        self._ui_scale = scale
+
+        horizontal_margin = self._scaled(16)
+        vertical_margin = self._scaled(12)
+        self.main_layout.setContentsMargins(
+            horizontal_margin, vertical_margin, horizontal_margin,
+            self._scaled(14),
+        )
+        self.main_layout.setSpacing(self._scaled(10))
+
+        if hasattr(self, "bottom_layout"):
+            self.bottom_layout.setSpacing(self._scaled(14))
+        if hasattr(self, "graph_layout"):
+            margin = self._scaled(14)
+            self.graph_layout.setContentsMargins(margin, margin, margin, margin)
+            self.graph_layout.setSpacing(self._scaled(10))
+        if hasattr(self, "control_layout"):
+            horizontal = self._scaled(12)
+            vertical = self._scaled(8)
+            self.control_layout.setContentsMargins(
+                horizontal, vertical, horizontal, vertical
+            )
+            self.control_layout.setSpacing(self._scaled(6))
+
+        if hasattr(self, "header_logo"):
+            logo_width = self._scaled(64)
+            logo_height = self._scaled(58)
+            self.header_logo.setFixedSize(logo_width, logo_height)
+            self.load_logo(self.header_logo, logo_width, logo_height)
+        if hasattr(self, "header_title"):
+            self.header_title.setFont(
+                QFont("Arial", self._scaled(20), QFont.Weight.Bold)
+            )
+
+        for card in getattr(self, "measurement_cards", []):
+            card.setMinimumHeight(self._scaled(100))
+        for plot in self.graphs.values():
+            plot.setMinimumHeight(self._scaled(170))
+        for name in ("open_button", "close_button", "stop_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setMinimumHeight(self._scaled(38))
+
+        if hasattr(self, "current_spinbox"):
+            self.current_spinbox.setMinimumHeight(self._scaled(32))
+        if hasattr(self, "send_current_button"):
+            self.send_current_button.setMinimumHeight(self._scaled(34))
+        if hasattr(self, "save_button"):
+            self.save_button.setMinimumHeight(self._scaled(34))
+        if hasattr(self, "reset_button"):
+            self.reset_button.setMinimumHeight(self._scaled(34))
+
+        self.apply_styles()
+        self.set_measurement_color(self.measuring)
+
+    def _scaled(self, value):
+        return max(1, round(value * self._ui_scale))
+
+    def _scale_stylesheet(self, stylesheet):
+        return re.sub(
+            r"(?<![\w.])(\d+(?:\.\d+)?)(px|pt)\b",
+            lambda match: f"{max(1, round(float(match.group(1)) * max(self._ui_scale, 0.1)))}{match.group(2)}",
+            stylesheet,
+        )
+
     # =====================================================
     # ÜST BAŞLIK
     # =====================================================
@@ -160,7 +251,8 @@ class MainWindow(QMainWindow):
         header.setSpacing(12)
 
         self.header_logo = QLabel()
-        self.header_logo.setFixedSize(64, 58)
+        self.header_logo.setMinimumSize(0, 0)
+        self.header_logo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.load_logo(self.header_logo, 64, 58)
         header.addWidget(self.header_logo)
 
@@ -168,8 +260,9 @@ class MainWindow(QMainWindow):
         title_layout.setSpacing(3)
 
         title = QLabel("FOCUS TEST SYSTEM")
+        self.header_title = title
         title.setObjectName("headerTitle")
-        title.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        title.setFont(QFont("Arial", 20, QFont.Weight.Bold))
 
         subtitle = QLabel("AKTÜATÖR PERFORMANS TESTİ")
         subtitle.setObjectName("headerSubtitle")
@@ -180,9 +273,16 @@ class MainWindow(QMainWindow):
 
         header.addStretch()
 
+        self.save_button = QPushButton("TESTİ KAYDET")
+        self.save_button.setObjectName("secondaryButton")
+        self.save_button.setMinimumHeight(0)
+        self.save_button.setMinimumWidth(0)
+        self.save_button.clicked.connect(self.open_save_dialog)
+        header.addWidget(self.save_button)
+
         self.back_button = QPushButton("← Ana Sayfa")
-        self.back_button.setMinimumHeight(40)
-        self.back_button.setFixedWidth(120)
+        self.back_button.setMinimumHeight(0)
+        self.back_button.setMinimumWidth(0)
         self.back_button.clicked.connect(
             self.back_requested.emit
         )
@@ -195,7 +295,8 @@ class MainWindow(QMainWindow):
         self.connection_status.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
-        self.connection_status.setMinimumWidth(190)
+        self.connection_status.setMinimumWidth(0)
+        self.connection_status.setWordWrap(True)
         header.addWidget(self.connection_status)
 
         self.check_connection_button = QPushButton(
@@ -239,7 +340,7 @@ class MainWindow(QMainWindow):
     def create_measurement_card(self, name, unit, key):
         card = QFrame()
         card.setObjectName("measurementCard")
-        card.setMinimumHeight(135)
+        card.setMinimumHeight(0)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 10, 8, 10)
@@ -275,8 +376,11 @@ class MainWindow(QMainWindow):
     def create_graph_panel(self):
         graph_card = QFrame()
         graph_card.setObjectName("panelCard")
+        graph_card.setMinimumWidth(0)
+        graph_card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(graph_card)
+        self.graph_layout = layout
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
@@ -315,7 +419,7 @@ class MainWindow(QMainWindow):
             plot = pg.PlotWidget()
             plot.setBackground(graph_background)
             plot.showGrid(x=True, y=True, alpha=0.25)
-            plot.setMinimumHeight(220)
+            plot.setMinimumHeight(100)
 
             plot.setTitle(
                 f"{name} Grafiği",
@@ -356,7 +460,12 @@ class MainWindow(QMainWindow):
             button.clicked.connect(
                 lambda checked=False, i=index: self.select_graph_tab(i)
             )
-            tab_row.addWidget(button)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Fixed,
+            )
+            tab_row.addWidget(button, 1)
             self.graph_tab_buttons.append(button)
 
         tab_row.addStretch()
@@ -375,6 +484,8 @@ class MainWindow(QMainWindow):
     def create_control_panel(self):
         outer_card = QFrame()
         outer_card.setObjectName("panelCard")
+        outer_card.setMinimumWidth(0)
+        outer_card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         outer_layout = QVBoxLayout(outer_card)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -384,6 +495,7 @@ class MainWindow(QMainWindow):
         content.setObjectName("controlContent")
 
         control_layout = QVBoxLayout(content)
+        self.control_layout = control_layout
         control_layout.setContentsMargins(12, 8, 12, 8)
         control_layout.setSpacing(6)
 
@@ -407,13 +519,287 @@ class MainWindow(QMainWindow):
 
         self.reset_button = QPushButton("ÖLÇÜMLERİ SIFIRLA")
         self.reset_button.setObjectName("secondaryButton")
-        self.reset_button.setFixedHeight(34)
+        self.reset_button.setMinimumHeight(0)
         self.reset_button.clicked.connect(self.reset_measurements)
         control_layout.addWidget(self.reset_button)
 
         outer_layout.addWidget(content)
 
         return outer_card
+
+    def open_save_dialog(self):
+        """Show a themed prompt for the card serial before saving a test."""
+        dialog = QDialog(self, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setObjectName("saveTestDialog")
+        dialog.setWindowTitle("Test Kaydını Kaydet")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(self._scaled(390))
+        dialog.setStyleSheet(self._scale_stylesheet("""
+            QDialog#saveTestDialog {
+                background-color: #080808;
+                color: #F5F5F5;
+                border: 1px solid #383838;
+                border-radius: 12px;
+            }
+            QLabel { color: #F5F5F5; background: transparent; border: none; }
+            QLabel#saveDialogTitle { font-size: 16px; font-weight: 800; }
+            QLabel#saveDialogPrompt { color: #A3A3A3; font-size: 12px; }
+            QLineEdit {
+                background-color: #101010;
+                color: #F5F5F5;
+                border: 1px solid #404040;
+                border-radius: 7px;
+                padding: 9px 11px;
+                selection-background-color: #164E63;
+                font-size: 13px;
+            }
+            QLineEdit:focus { border: 1px solid #38BDF8; }
+            QPushButton {
+                background-color: #202020;
+                color: #F5F5F5;
+                border: 1px solid #404040;
+                border-radius: 7px;
+                padding: 9px 13px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background-color: #303030; border-color: #737373; }
+            QPushButton#generateSerialButton {
+                background-color: #10232B;
+                border-color: #155E75;
+                color: #7DD3FC;
+            }
+            QPushButton#generateSerialButton:hover { background-color: #123744; }
+            QPushButton#saveConfirmButton {
+                background-color: #7F1D1D;
+                border-color: #B91C1C;
+                color: #FFFFFF;
+            }
+            QPushButton#saveConfirmButton:hover { background-color: #991B1B; }
+            QPushButton#dialogCloseButton {
+                border: none;
+                background: transparent;
+                color: #A3A3A3;
+                font-size: 17px;
+                padding: 2px;
+            }
+            QPushButton#dialogCloseButton:hover { color: #FFFFFF; background: #292929; }
+        """))
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(self._scaled(18), self._scaled(14), self._scaled(18), self._scaled(16))
+        layout.setSpacing(self._scaled(14))
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(self._scaled(8))
+        title = QLabel("TEST KAYDINI KAYDET")
+        title.setObjectName("saveDialogTitle")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        close_button = QPushButton("×")
+        close_button.setObjectName("dialogCloseButton")
+        close_button.setFixedSize(self._scaled(28), self._scaled(28))
+        close_button.clicked.connect(dialog.reject)
+        title_row.addWidget(close_button)
+        layout.addLayout(title_row)
+
+        prompt = QLabel(
+            "Seri numarasını girin ya da yeni bir numara oluşturun. "
+            "Test bu karta kaydedilir."
+        )
+        prompt.setObjectName("saveDialogPrompt")
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+
+        serial_row = QHBoxLayout()
+        serial_row.setSpacing(self._scaled(8))
+        serial_input = QLineEdit()
+        serial_input.setPlaceholderText("Kart seri numarası")
+        serial_input.setText(self.active_serial or "")
+        serial_row.addWidget(serial_input, 1)
+        generate_button = QPushButton("Seri Numarası Oluştur")
+        generate_button.setObjectName("generateSerialButton")
+        generate_button.clicked.connect(
+            lambda: serial_input.setText(self.database.generate_serial_number())
+        )
+        serial_row.addWidget(generate_button)
+        layout.addLayout(serial_row)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(self._scaled(8))
+        actions.addStretch(1)
+        cancel_button = QPushButton("Vazgeç")
+        save_button = QPushButton("Kaydet")
+        save_button.setObjectName("saveConfirmButton")
+        actions.addWidget(cancel_button)
+        actions.addWidget(save_button)
+        layout.addLayout(actions)
+
+        cancel_button.clicked.connect(dialog.reject)
+        save_button.clicked.connect(
+            lambda: self._save_test_for_serial(serial_input.text(), dialog)
+        )
+        serial_input.returnPressed.connect(
+            lambda: self._save_test_for_serial(serial_input.text(), dialog)
+        )
+        serial_input.setFocus()
+        dialog.exec()
+
+    def _save_test_for_serial(self, serial_number, dialog):
+        serial = str(serial_number).strip()
+        if not serial:
+            QMessageBox.warning(
+                dialog,
+                "Seri Numarası Gerekli",
+                "Seri numarası girin veya yeni bir numara oluşturun.",
+            )
+            return
+
+        try:
+            device = self.database.get_device(serial)
+            if device is None:
+                self.database.create_device(serial)
+                device = self.database.get_device(serial)
+
+            measurements = {}
+            for key, label in self.value_labels.items():
+                try:
+                    measurements[key] = float(label.text().strip())
+                except (TypeError, ValueError):
+                    measurements[key] = None
+
+            try:
+                measurements["actuator_position"] = float(
+                    self.position_value.text().replace("%", "").strip()
+                )
+            except (TypeError, ValueError):
+                measurements["actuator_position"] = None
+
+            duration = self.elapsed_seconds
+            if self.measuring and self.start_time is not None:
+                duration = time.monotonic() - self.start_time
+
+            test_id = self.database.save_test(
+                device["serial_number"],
+                measurements,
+                test_mode=("ON/OFF" if self.current_mode == "onoff" else "ORANSAL"),
+                duration_seconds=duration,
+                result=self.test_result.text(),
+                samples=self._collect_graph_samples(),
+            )
+        except Exception as error:
+            QMessageBox.critical(dialog, "Kayıt Yapılamadı", str(error))
+            return
+
+        self.active_serial = device["serial_number"]
+        self.test_saved.emit(self.active_serial, test_id)
+        self._show_save_success(dialog, self.active_serial, test_id)
+        dialog.accept()
+
+    def _show_save_success(self, parent, serial_number, test_id):
+        success = QDialog(
+            parent,
+            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint,
+        )
+        success.setObjectName("testSavedDialog")
+        success.setWindowTitle("Test kaydedildi")
+        success.setModal(True)
+        success.setMinimumWidth(self._scaled(430))
+        success.setStyleSheet(self._scale_stylesheet("""
+            QDialog#testSavedDialog {
+                background-color: #080808;
+                color: #F5F5F5;
+                border: 1px solid #383838;
+                border-radius: 12px;
+            }
+            QLabel { color: #F5F5F5; background: transparent; border: none; }
+            QLabel#successTitle { color: #4ADE80; font-size: 17px; font-weight: 800; }
+            QLabel#successSubtitle { color: #A3A3A3; font-size: 12px; }
+            QFrame#successCard { background: #101713; border: 1px solid #24543A; border-radius: 9px; }
+            QLabel#detailCaption { color: #A3A3A3; font-size: 11px; font-weight: 700; }
+            QLabel#detailValue { color: #FFFFFF; font-size: 13px; font-weight: 800; }
+            QPushButton#successClose { background: #166534; color: #FFFFFF; border: 1px solid #4ADE80; border-radius: 7px; padding: 9px 20px; font-size: 12px; font-weight: 800; }
+            QPushButton#successClose:hover { background: #15803D; border-color: #86EFAC; }
+            QPushButton#successClose:pressed { background: #14532D; }
+        """))
+
+        layout = QVBoxLayout(success)
+        layout.setContentsMargins(self._scaled(20), self._scaled(18), self._scaled(20), self._scaled(18))
+        layout.setSpacing(self._scaled(12))
+
+        heading = QHBoxLayout()
+        check = QLabel("✓")
+        check.setStyleSheet(
+            f"color: #4ADE80; font-size: {self._scaled(25)}px; font-weight: 900;"
+        )
+        heading.addWidget(check)
+        title = QLabel("TEST KAYDI TAMAMLANDI")
+        title.setObjectName("successTitle")
+        heading.addWidget(title)
+        heading.addStretch(1)
+        layout.addLayout(heading)
+
+        subtitle = QLabel("Ölçüm sonuçları kartın kayıt geçmişine eklendi.")
+        subtitle.setObjectName("successSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        details = QFrame()
+        details.setObjectName("successCard")
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(self._scaled(14), self._scaled(12), self._scaled(14), self._scaled(12))
+        details_layout.setSpacing(self._scaled(9))
+        values = (
+            ("KART SERİ NUMARASI", serial_number),
+            ("KAYIT NUMARASI", str(test_id)),
+            ("TEST MODU", "ON/OFF" if self.current_mode == "onoff" else "ORANSAL"),
+            ("TEST SONUCU", self.test_result.text().strip() or "Kaydedildi"),
+        )
+        for caption_text, value_text in values:
+            row = QHBoxLayout()
+            caption = QLabel(caption_text)
+            caption.setObjectName("detailCaption")
+            value = QLabel(str(value_text))
+            value.setObjectName("detailValue")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setWordWrap(True)
+            row.addWidget(caption)
+            row.addStretch(1)
+            row.addWidget(value)
+            details_layout.addLayout(row)
+        layout.addWidget(details)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        close_button = QPushButton("TAMAM")
+        close_button.setObjectName("successClose")
+        close_button.clicked.connect(success.accept)
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+        success.exec()
+
+    def _collect_graph_samples(self):
+        """Combine graph data into rows for storage with the test summary."""
+        sample_count = max(
+            (len(series["time"]) for series in self.graph_data.values()),
+            default=0,
+        )
+        samples = []
+        for index in range(sample_count):
+            elapsed_values = [
+                series["time"][index]
+                for series in self.graph_data.values()
+                if index < len(series["time"])
+            ]
+            sample = {"elapsed_seconds": max(elapsed_values)}
+            for key, series in self.graph_data.items():
+                sample[key] = (
+                    series["values"][index]
+                    if index < len(series["values"])
+                    else None
+                )
+            samples.append(sample)
+        return samples
 
     # =====================================================
     # SİSTEM DURUMU
@@ -569,17 +955,17 @@ class MainWindow(QMainWindow):
 
         self.open_button = QPushButton("ON")
         self.open_button.setObjectName("openButton")
-        self.open_button.setMinimumHeight(38)
+        self.open_button.setMinimumHeight(0)
         self.open_button.clicked.connect(self.open_actuator)
 
         self.close_button = QPushButton("OFF")
         self.close_button.setObjectName("closeButton")
-        self.close_button.setMinimumHeight(38)
+        self.close_button.setMinimumHeight(0)
         self.close_button.clicked.connect(self.close_actuator)
 
         self.stop_button = QPushButton("DURDUR")
         self.stop_button.setObjectName("stopButton")
-        self.stop_button.setMinimumHeight(38)
+        self.stop_button.setMinimumHeight(0)
         self.stop_button.clicked.connect(self.stop_actuator)
 
         layout.addWidget(self.open_button)
@@ -640,7 +1026,7 @@ class MainWindow(QMainWindow):
         self.current_spinbox.setDecimals(1)
         self.current_spinbox.setValue(12.0)
         self.current_spinbox.setSuffix(" mA")
-        self.current_spinbox.setFixedHeight(32)
+        self.current_spinbox.setMinimumHeight(0)
         self.current_spinbox.valueChanged.connect(
             self.update_current_from_spinbox
         )
@@ -650,7 +1036,7 @@ class MainWindow(QMainWindow):
             "HEDEF AKIMI GÖNDER"
         )
         self.send_current_button.setObjectName("sendCurrentButton")
-        self.send_current_button.setFixedHeight(34)
+        self.send_current_button.setMinimumHeight(0)
         self.send_current_button.clicked.connect(
             self.send_target_current
         )
@@ -955,7 +1341,7 @@ class MainWindow(QMainWindow):
         c = QColor(color)
         r, g, b = c.red(), c.green(), c.blue()
 
-        return f"""
+        return self._scale_stylesheet(f"""
             QPushButton {{
                 background-color: rgba({r}, {g}, {b}, 28);
                 color: {color};
@@ -977,7 +1363,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid {color};
                 font-weight: 800;
             }}
-        """
+        """)
 
     def select_graph_tab(self, index):
         self.graph_stack.setCurrentIndex(index)
@@ -1005,7 +1391,7 @@ class MainWindow(QMainWindow):
         for label in self.value_labels.values():
             label.setStyleSheet(
                 f"color: {color}; "
-                "font-size: 34px; "
+                f"font-size: {self._scaled(28)}px; "
                 "font-weight: 800;"
             )
 
@@ -1090,7 +1476,7 @@ class MainWindow(QMainWindow):
             background = "#211012"
             border = "#9F3A4B"
 
-        self.connection_status.setStyleSheet(f"""
+        self.connection_status.setStyleSheet(self._scale_stylesheet(f"""
             QLabel#connectionStatus {{
                 color: {color};
                 background-color: {background};
@@ -1100,7 +1486,7 @@ class MainWindow(QMainWindow):
                 font-size: 12px;
                 font-weight: 700;
             }}
-        """)
+        """))
 
     # =====================================================
     # LOGO
@@ -1134,16 +1520,17 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def apply_styles(self):
-        self.setStyleSheet(f"""
+        self.setStyleSheet(self._scale_stylesheet(f"""
             QMainWindow {{
                 background-color: {BACKGROUND};
             }}
+
 
             QWidget#centralWidget {{
                 background-color: {BACKGROUND};
                 color: {TEXT};
                 font-family: "Segoe UI";
-                font-size: 14px;
+                font-size: 13px;
             }}
 
             QWidget#controlContent {{
@@ -1157,7 +1544,7 @@ class MainWindow(QMainWindow):
             }}
 
             QLabel#headerTitle {{
-                font-size: 25px;
+                font-size: 22px;
                 font-weight: 700;
                 color: #FFFFFF;
             }}
@@ -1182,7 +1569,7 @@ class MainWindow(QMainWindow):
 
             QLabel#measurementValue {{
                 color: {TEXT};
-                font-size: 34px;
+                font-size: 28px;
                 font-weight: 800;
             }}
 
@@ -1194,7 +1581,7 @@ class MainWindow(QMainWindow):
 
             QLabel#sectionTitle {{
                 color: #E5E5E5;
-                font-size: 17px;
+                font-size: 15px;
                 font-weight: 700;
             }}
 
@@ -1420,7 +1807,7 @@ class MainWindow(QMainWindow):
             QDoubleSpinBox:focus {{
                 border: 1px solid #A78BFA;
             }}
-        """)
+        """))
 
     # =====================================================
     # KAPATMA
@@ -1437,3 +1824,8 @@ class MainWindow(QMainWindow):
             print(f"Bağlantı kapatılırken hata: {error}")
 
         event.accept()
+
+
+
+
+
