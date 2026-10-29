@@ -1,6 +1,7 @@
 import pyqtgraph as pg
 
 from PySide6.QtCore import Qt, Signal
+from ui.responsive import ResponsiveScaler
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -49,7 +50,7 @@ class RecordsPage(QWidget):
             QLabel#metricCaption { color: #92929B; font-size: 10px; font-weight: 700; }
             QLabel#metricValue { color: #F4F4F5; font-size: 19px; font-weight: 800; }
             QLabel#liveBadge { color: #67E8F9; background: #10232B; border: 1px solid #155E75; border-radius: 7px; padding: 7px 10px; font-size: 10px; font-weight: 800; }
-            QPushButton { background-color: #202020; color: #F5F5F5; border: 1px solid #404040; border-radius: 7px; padding: 8px 12px; font-size: 12px; font-weight: 700; }
+            QPushButton { background-color: #202020; color: #F5F5F5; border: 1px solid #404040; border-radius: 7px; padding: 12px 18px; font-size: 14px; font-weight: 700; }
             QPushButton:hover { background-color: #303030; border-color: #737373; }
             QPushButton:pressed { background-color: #3A3A3A; border-color: #A3A3A3; }
             QPushButton:disabled { color: #66666E; background-color: #111114; border-color: #29292F; }
@@ -225,6 +226,7 @@ class RecordsPage(QWidget):
 
         self.refresh_devices()
         self._show_chart_placeholder()
+        self._responsive_scaler = ResponsiveScaler(self)
 
     @staticmethod
     def _make_delete_button(text):
@@ -251,12 +253,8 @@ class RecordsPage(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        orientation = (
-            Qt.Orientation.Horizontal if self.width() >= 1100
-            else Qt.Orientation.Vertical
-        )
-        if self.splitter.orientation() != orientation:
-            self.splitter.setOrientation(orientation)
+        if self.splitter.orientation() != Qt.Orientation.Horizontal:
+            self.splitter.setOrientation(Qt.Orientation.Horizontal)
 
     def refresh_devices(self, *_, clear_selection=False):
         previous_serial = None if clear_selection else self.current_serial

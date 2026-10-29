@@ -3,6 +3,8 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
+from ui.responsive import ResponsiveScaler
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -11,7 +13,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QPushButton,
     QSizePolicy,
-    QScrollArea,
 )
 
 
@@ -42,6 +43,7 @@ class HomePage(QWidget):
 
         self.setup_ui()
         self.apply_styles()
+        self._responsive_scaler = ResponsiveScaler(self)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.setInterval(1000)
@@ -140,23 +142,10 @@ class HomePage(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        self.scroll_area = QScrollArea(self)
-        self.scroll_area.setObjectName("homeScrollArea")
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-
         self.content_widget = QWidget()
         self.content_widget.setObjectName("homeContent")
-        self.content_widget.setMinimumWidth(0)
-
-        self.scroll_area.setWidget(self.content_widget)
-        outer_layout.addWidget(self.scroll_area)
+        self.content_widget.setMinimumSize(0, 0)
+        outer_layout.addWidget(self.content_widget)
 
         main = QVBoxLayout(self.content_widget)
         main.setContentsMargins(20, 12, 20, 10)

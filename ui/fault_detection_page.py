@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from database import FocusDatabase
+from ui.responsive import ResponsiveScaler
 
 
 BG = "#0B0B0D"
@@ -62,6 +63,7 @@ class FaultDetectionPage(QWidget):
         self._build_ui()
         self._apply_styles()
         self.refresh_device_choices()
+        self._responsive_scaler = ResponsiveScaler(self, scale_stylesheet=False)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -613,18 +615,11 @@ class FaultDetectionPage(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_to_window()
-        columns = 4 if self.width() >= 1200 else 2
-        if getattr(self, "_recommendation_columns", None) != columns:
-            for card in self._recommendation_order:
-                self.checks_layout.removeWidget(card)
-            for index, card in enumerate(self._recommendation_order):
-                self.checks_layout.addWidget(card, index // columns, index % columns)
-            self._recommendation_columns = columns
 
     def _fit_to_window(self):
         if self.width() <= 0 or self.height() <= 0:
             return
-        scale = max(0.65, min(self.width() / 1366, self.height() / 768, 1.35))
+        scale = max(0.52, min(self.width() / 1366, self.height() / 768, 1.5))
         if abs(scale - self._ui_scale) < 0.02:
             return
         self._ui_scale = scale
@@ -637,7 +632,7 @@ class FaultDetectionPage(QWidget):
         self._apply_styles()
 
     def _apply_styles(self):
-        scale = max(0.65, self._ui_scale)
+        scale = max(0.52, self._ui_scale)
         def px(value):
             return max(1, round(value * scale))
         self.setStyleSheet(f"""
